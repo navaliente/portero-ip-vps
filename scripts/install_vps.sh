@@ -92,7 +92,7 @@ ufw allow 22/tcp comment "SSH"
 ufw allow 5060/udp comment "SIP UDP"
 ufw allow 5060/tcp comment "SIP TCP"
 ufw allow 5061/tcp comment "SIP TLS"
-ufw allow 8080/tcp comment "Asterisk WS (App Movil)"
+ufw allow 8086/tcp comment "Asterisk WS (App Movil)"
 ufw allow 8089/tcp comment "Asterisk WSS (App Movil Segura)"
 ufw allow 10000:20000/udp comment "RTP Audio y Video H264"
 ufw --force enable

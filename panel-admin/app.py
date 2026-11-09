@@ -288,7 +288,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                         "sip_host": pub_ip,
                         "sip_port": 5060,
                         "push_proxy_port": 5062,
-                        "ws_url": f"ws://{pub_ip}:8080/ws",
+                        "ws_url": f"ws://{pub_ip}:8086/ws",
                         "wss_url": f"wss://{pub_ip}:8089/ws",
                         "door_exten": "8000",
                         "dtmf_unlock": "#",
