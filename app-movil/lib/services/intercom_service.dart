@@ -161,7 +161,7 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
     final stream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
     _helper.call(
       'sip:${config!.doorExten}@${config!.sipHost}',
-      voiceonly: false,
+      voiceOnly: false,
       mediaStream: stream,
     );
   }

@@ -12,6 +12,8 @@ jobs:
   build-apk:
     name: Compilar APK Flutter (Android Release)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Clonar repositorio
@@ -45,12 +47,24 @@ jobs:
 
       - name: Compilar APK Release
         working-directory: app-movil
-        run: flutter build apk --release --no-tree-shake-icons
+        run: |
+          flutter build apk --release --no-tree-shake-icons
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/portero-ip-edificio.apk
 
       - name: Publicar APK como Artefacto Descargable en GitHub
         uses: actions/upload-artifact@v4
         with:
           name: Portero-IP-Edificio-APK
-          path: app-movil/build/app/outputs/flutter-apk/app-release.apk
+          path: app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
           retention-days: 90
+
+      - name: Publicar APK en Releases para descarga directa con 1 clic
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "App Móvil Videoportero IP (Android APK)"
+          body: "Descarga directa del instalador Android (`portero-ip-edificio.apk`) para los vecinos del edificio."
+          files: app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
