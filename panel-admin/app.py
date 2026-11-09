@@ -158,10 +158,11 @@ def get_asterisk_aor_status() -> dict[str, dict]:
         # Contact:  101/sip:101@...  Avail  ...
         current_aor = None
         for line in out.splitlines():
-            m_aor = re.match(r"^\s*Aor:\s+(\d+)\s+", line)
+            m_aor = re.match(r"^\s*Aor:\s+(\d+)(?:-webrtc)?\s+", line)
             if m_aor:
                 current_aor = m_aor.group(1)
-                result[current_aor] = {"contacts": 0, "status": "Offline"}
+                if current_aor not in result:
+                    result[current_aor] = {"contacts": 0, "status": "Offline"}
                 continue
             if current_aor and "Contact:" in line:
                 result[current_aor]["contacts"] += 1
@@ -592,6 +593,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 
     def render_neighbor_app(self, exten: str, token: str) -> None:
         pub_ip = get_public_ip()
+        sip_pass = ""
+        for item in parse_extensions():
+            if item["exten"] == exten:
+                sip_pass = item["password"]
+                break
         page = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -599,6 +605,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Portero IP • Depto {html.escape(exten)}</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jssip@3.10.0/dist/jssip.min.js"></script>
 </head>
 <body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-2 sm:p-6">
     <!-- Marco estilo Smartphone para el Vecino -->
@@ -609,7 +616,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 <div class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
                 <span class="font-bold text-base">Portero IP • Depto {html.escape(exten)}</span>
             </div>
-            <span class="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-mono">
+            <span id="webrtcStatusBadge" class="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-mono">
                 VPS: {html.escape(pub_ip)}
             </span>
         </div>
@@ -617,6 +624,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         <!-- Visor de Video H.264 del Frente de Calle KD9203 -->
         <div class="relative flex-1 bg-black m-3 rounded-2xl overflow-hidden border border-slate-700 flex flex-col items-center justify-center">
             <video id="remoteVideo" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+            <audio id="remoteAudio" autoplay></audio>
+            <img id="liveCameraImg" alt="Cámara KD9203" class="w-full h-full object-cover hidden" />
 
             <!-- Vista de Cámara Simulada / Standby -->
             <div id="cameraPlaceholder" class="text-center p-6">
@@ -633,15 +642,28 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             </div>
 
             <!-- Etiqueta EN VIVO -->
-            <div id="liveBadge" class="hidden absolute top-3 left-3 bg-black/70 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-2 border border-red-500/40">
+            <div id="liveBadge" class="hidden absolute top-3 left-3 bg-black/70 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-2 border border-red-500/40 z-20">
                 <span class="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping"></span>
-                <span>FRENTE KD9203 (H.264 EN VIVO - EXT 8000)</span>
+                <span id="liveBadgeText">FRENTE KD9203 (H.264 EN VIVO - EXT 8000)</span>
+            </div>
+
+            <!-- Banner de Timbre Entrante -->
+            <div id="ringingBanner" class="hidden absolute inset-x-3 top-12 bg-amber-600/95 text-white p-3.5 rounded-2xl text-center shadow-2xl border-2 border-amber-300 z-20 animate-bounce">
+                <p class="text-base font-extrabold">🔔 ¡TIMBRE DESDE FRENTE KD9203!</p>
+                <div class="flex gap-2 justify-center mt-2">
+                    <button onclick="answerCall()" class="px-4 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-extrabold shadow">
+                        📞 ATENDER
+                    </button>
+                    <button onclick="sendDtmfUnlock()" class="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-emerald-300 rounded-xl text-xs font-extrabold shadow">
+                        🔓 ABRIR PUERTA (#)
+                    </button>
+                </div>
             </div>
 
             <!-- Alerta de Puerta Abierta (#) -->
-            <div id="doorOpenedBanner" class="hidden absolute inset-x-4 top-1/2 -translate-y-1/2 bg-emerald-600/95 text-white p-5 rounded-2xl text-center shadow-2xl border border-emerald-300">
+            <div id="doorOpenedBanner" class="hidden absolute inset-x-4 top-1/2 -translate-y-1/2 bg-emerald-600/95 text-white p-5 rounded-2xl text-center shadow-2xl border border-emerald-300 z-30">
                 <p class="text-2xl font-extrabold mb-1">🔓 ¡PUERTA ABIERTA!</p>
-                <p class="text-xs text-emerald-100">Pulso DTMF '#' enviado al Relé 12V del Frente KD9203</p>
+                <p id="doorOpenedSub" class="text-xs text-emerald-100">Pulso DTMF '#' enviado al Relé 12V del Frente KD9203</p>
             </div>
         </div>
 
@@ -661,12 +683,16 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 </button>
                 <button onclick="simulateRing()"
                         class="py-3 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5">
-                    <span>🔔 Simular Timbre</span>
+                    <span>🔔 Probar Timbre</span>
                 </button>
             </div>
 
             <!-- Controles de Audio / Cortar -->
             <div class="flex justify-between items-center pt-1">
+                <button onclick="answerCall()"
+                        class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 rounded-xl text-xs font-bold">
+                    📞 Atender
+                </button>
                 <button onclick="toggleMute()" id="muteBtn"
                         class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">
                     🎤 Micrófono: ON
@@ -681,30 +707,208 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 
     <script>
         let micOn = true;
-        function startMonitor() {{
+        let audioCtx = null;
+        let ringtoneTimer = null;
+        let cameraTimer = null;
+        let lastKdCallStatus = 'idle';
+        let ua = null;
+        let currentSession = null;
+        const EXTEN = "{html.escape(exten)}";
+        const SIP_PASS = "{html.escape(sip_pass)}";
+        const LOCAL_API = "http://localhost:8090";
+
+        function playDingDongOnce() {{
+            try {{
+                if (!audioCtx) {{
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new AudioContext();
+                }}
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const now = audioCtx.currentTime;
+                const osc1 = audioCtx.createOscillator();
+                const gain1 = audioCtx.createGain();
+                osc1.frequency.setValueAtTime(784, now);
+                gain1.gain.setValueAtTime(0.45, now);
+                gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
+                osc1.connect(gain1);
+                gain1.connect(audioCtx.destination);
+                osc1.start(now);
+                osc1.stop(now + 0.45);
+
+                const osc2 = audioCtx.createOscillator();
+                const gain2 = audioCtx.createGain();
+                osc2.frequency.setValueAtTime(659.25, now + 0.35);
+                gain2.gain.setValueAtTime(0.45, now + 0.35);
+                gain2.gain.exponentialRampToValueAtTime(0.008, now + 1.1);
+                osc2.connect(gain2);
+                gain2.connect(audioCtx.destination);
+                osc2.start(now + 0.35);
+                osc2.stop(now + 1.1);
+            }} catch (_) {{}}
+        }}
+
+        function startRingingLoop() {{
+            playDingDongOnce();
+            if (!ringtoneTimer) ringtoneTimer = setInterval(playDingDongOnce, 1800);
+        }}
+
+        function stopRingingLoop() {{
+            if (ringtoneTimer) {{
+                clearInterval(ringtoneTimer);
+                ringtoneTimer = null;
+            }}
+        }}
+
+        function startCameraFeed() {{
+            const img = document.getElementById('liveCameraImg');
             document.getElementById('liveBadge').classList.remove('hidden');
             document.getElementById('callStatusTitle').innerText = 'Monitoreando Frente KD9203 (Ext 8000)';
             document.getElementById('callStatusSub').innerText = 'Streaming de Video H.264 + Audio bidireccional activo';
+
+            const refreshFrame = () => {{
+                const nextImg = new Image();
+                nextImg.onload = () => {{
+                    img.src = nextImg.src;
+                    img.classList.remove('hidden');
+                    document.getElementById('cameraPlaceholder').classList.add('hidden');
+                }};
+                nextImg.src = LOCAL_API + '/api/snapshot.jpg?t=' + Date.now();
+            }};
+            refreshFrame();
+            if (!cameraTimer) cameraTimer = setInterval(refreshFrame, 350);
         }}
+
+        function startMonitor() {{
+            stopRingingLoop();
+            startCameraFeed();
+            if (ua && (!currentSession || currentSession.isEnded())) {{
+                try {{
+                    ua.call('sip:8000@138.219.41.163', {{ mediaConstraints: {{ audio: true, video: true }} }});
+                }} catch (_) {{}}
+            }}
+        }}
+
         function simulateRing() {{
-            document.getElementById('liveBadge').classList.remove('hidden');
+            startRingingLoop();
+            startCameraFeed();
+            document.getElementById('ringingBanner').classList.remove('hidden');
             document.getElementById('callStatusTitle').innerText = '🔔 ¡TIMBRE DESDE FRENTE KD9203!';
             document.getElementById('callStatusSub').innerText = 'Visita en puerta principal -> Presiona ABRIR PUERTA (#)';
         }}
-        function sendDtmfUnlock() {{
-            const banner = document.getElementById('doorOpenedBanner');
-            banner.classList.remove('hidden');
-            setTimeout(() => banner.classList.add('hidden'), 3000);
+
+        async function answerCall() {{
+            stopRingingLoop();
+            document.getElementById('ringingBanner').classList.add('hidden');
+            startCameraFeed();
+            if (currentSession && currentSession.isInProgress()) {{
+                try {{ currentSession.answer({{ mediaConstraints: {{ audio: true, video: true }} }}); }} catch (_) {{}}
+            }}
+            try {{
+                await fetch(LOCAL_API + '/api/callsignal', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ cmdType: 'answer' }})
+                }});
+            }} catch (_) {{}}
         }}
+
+        async function sendDtmfUnlock() {{
+            stopRingingLoop();
+            if (currentSession && currentSession.isEstablished()) {{
+                try {{ currentSession.sendDTMF('#'); }} catch (_) {{}}
+            }}
+            const banner = document.getElementById('doorOpenedBanner');
+            const sub = document.getElementById('doorOpenedSub');
+            banner.classList.remove('hidden');
+            try {{
+                const res = await fetch(LOCAL_API + '/api/unlock', {{ method: 'POST' }});
+                const data = await res.json();
+                if (data.ok) sub.innerText = '¡Relé Físico #1 del KD9203 activado en vivo!';
+            }} catch (_) {{}}
+            setTimeout(() => banner.classList.add('hidden'), 3500);
+        }}
+
         function toggleMute() {{
             micOn = !micOn;
             document.getElementById('muteBtn').innerText = micOn ? '🎤 Micrófono: ON' : '🔇 Micrófono: MUTE';
         }}
-        function endCall() {{
+
+        async function endCall() {{
+            stopRingingLoop();
+            if (cameraTimer) {{ clearInterval(cameraTimer); cameraTimer = null; }}
+            document.getElementById('liveCameraImg').classList.add('hidden');
+            document.getElementById('remoteVideo').classList.add('hidden');
+            document.getElementById('cameraPlaceholder').classList.remove('hidden');
             document.getElementById('liveBadge').classList.add('hidden');
+            document.getElementById('ringingBanner').classList.add('hidden');
             document.getElementById('callStatusTitle').innerText = 'En Espera de Timbre';
-            document.getElementById('callStatusSub').innerText = 'Extensión {html.escape(exten)}-webrtc lista • Notificaciones Push Activas';
+            document.getElementById('callStatusSub').innerText = 'Extensión ' + EXTEN + '-webrtc lista • Notificaciones Push Activas';
+            if (currentSession) {{
+                try {{ currentSession.terminate(); }} catch (_) {{}}
+                currentSession = null;
+            }}
+            try {{
+                await fetch(LOCAL_API + '/api/callsignal', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ cmdType: 'hangUp' }})
+                }});
+            }} catch (_) {{}}
         }}
+
+        async function pollKdStatus() {{
+            try {{
+                const res = await fetch(LOCAL_API + '/api/status');
+                const data = await res.json();
+                if (data.ok) {{
+                    if (data.callStatus === 'ring' && lastKdCallStatus !== 'ring') {{
+                        simulateRing();
+                    }} else if (data.callStatus === 'idle' && lastKdCallStatus !== 'idle') {{
+                        stopRingingLoop();
+                        document.getElementById('ringingBanner').classList.add('hidden');
+                    }}
+                    lastKdCallStatus = data.callStatus;
+                }}
+            }} catch (_) {{}}
+        }}
+
+        function initWebRTC() {{
+            if (typeof JsSIP === 'undefined' || !SIP_PASS) return;
+            try {{
+                const socket = new JsSIP.WebSocketInterface('wss://vps-6615824-x.dattaweb.com/ws');
+                ua = new JsSIP.UA({{
+                    sockets: [socket],
+                    uri: 'sip:' + EXTEN + '-webrtc@138.219.41.163',
+                    authorization_user: EXTEN,
+                    password: SIP_PASS,
+                    register: true
+                }});
+                ua.on('registered', () => {{
+                    document.getElementById('webrtcStatusBadge').innerText = 'EN LÍNEA (WSS)';
+                }});
+                ua.on('newRTCSession', (data) => {{
+                    currentSession = data.session;
+                    if (currentSession.direction === 'incoming') simulateRing();
+                    currentSession.on('peerconnection', (e) => {{
+                        e.peerconnection.addEventListener('track', (ev) => {{
+                            if (ev.track.kind === 'video') {{
+                                const v = document.getElementById('remoteVideo');
+                                v.srcObject = ev.streams[0];
+                                v.classList.remove('hidden');
+                                document.getElementById('cameraPlaceholder').classList.add('hidden');
+                            }} else if (ev.track.kind === 'audio') {{
+                                document.getElementById('remoteAudio').srcObject = ev.streams[0];
+                            }}
+                        }});
+                    }});
+                }});
+                ua.start();
+            }} catch (_) {{}}
+        }}
+
+        initWebRTC();
+        setInterval(pollKdStatus, 700);
+        pollKdStatus();
     </script>
 </body>
 </html>"""
