@@ -1,0 +1,18 @@
+# Archivos sensibles y llaves locales
+*.pem
+*.key
+firebase-service-account.json
+credenciales_portero.txt
+push_devices.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Flutter / Dart build artifacts
+app-movil/.dart_tool/
+app-movil/build/
+app-movil/.flutter-plugins*
+app-movil/android/.gradle/
+app-movil/ios/Pods/

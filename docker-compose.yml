@@ -1,0 +1,30 @@
+services:
+  asterisk-portero:
+    image: andrius/asterisk:latest
+    container_name: asterisk-portero
+    restart: unless-stopped
+    # network_mode: host evita el doble NAT de Docker para los puertos RTP (10000-20000) y SIP (5060/5061)
+    network_mode: host
+    volumes:
+      - ./asterisk/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./asterisk/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./asterisk/rtp.conf:/etc/asterisk/rtp.conf:ro
+      - ./asterisk/logger.conf:/etc/asterisk/logger.conf:ro
+      - ./push/push_wakeup.py:/var/lib/asterisk/agi-bin/push_wakeup.py:ro
+      - asterisk_logs:/var/log/asterisk
+
+  flexisip-portero:
+    image: belledonnecommunications/flexisip:latest
+    container_name: flexisip-portero
+    restart: unless-stopped
+    network_mode: host
+    command: ["flexisip", "--configfile", "/etc/flexisip/flexisip.conf"]
+    volumes:
+      - ./push/flexisip.conf:/etc/flexisip/flexisip.conf:ro
+      - ./push/keys:/etc/flexisip/push:ro
+    depends_on:
+      - asterisk-portero
+
+volumes:
+  asterisk_logs:
+

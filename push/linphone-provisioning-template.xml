@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://www.linphone.org/xsds/lpconfig.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.linphone.org/xsds/lpconfig.xsd lpconfig.xsd">
+  <section name="sip">
+    <entry name="default_proxy" overwrite="true">0</entry>
+    <entry name="use_info" overwrite="true">0</entry>
+    <entry name="use_rfc2833" overwrite="true">1</entry>
+    <entry name="keepalive_period" overwrite="true">30000</entry>
+    <entry name="ping_with_options" overwrite="true">1</entry>
+  </section>
+
+  <section name="video">
+    <entry name="display" overwrite="true">1</entry>
+    <entry name="capture" overwrite="true">1</entry>
+    <entry name="show_local" overwrite="true">0</entry>
+    <entry name="automatically_initiate" overwrite="true">1</entry>
+    <entry name="automatically_accept" overwrite="true">1</entry>
+  </section>
+
+  <section name="net">
+    <entry name="stun_server" overwrite="true">stun.l.google.com:19302</entry>
+    <entry name="firewall_policy" overwrite="true">ice</entry>
+  </section>
+
+  <section name="auth_info_0" overwrite="true">
+    <entry name="username" overwrite="true">__EXTEN__</entry>
+    <entry name="userid" overwrite="true">__EXTEN__</entry>
+    <entry name="passwd" overwrite="true">__PASSWORD__</entry>
+    <entry name="realm" overwrite="true">asterisk</entry>
+    <entry name="domain" overwrite="true">__VPS_IP__</entry>
+  </section>
+
+  <section name="proxy_0" overwrite="true">
+    <!-- Conecta a través del Proxy Push Flexisip en el puerto 5062 TCP -->
+    <entry name="reg_proxy" overwrite="true">&lt;sip:__VPS_IP__:5062;transport=tcp&gt;</entry>
+    <entry name="reg_route" overwrite="true">&lt;sip:__VPS_IP__:5062;transport=tcp;lr&gt;</entry>
+    <entry name="reg_identity" overwrite="true">"Depto __EXTEN__" &lt;sip:__EXTEN__@__VPS_IP__&gt;</entry>
+    <entry name="reg_expires" overwrite="true">604800</entry>
+    <entry name="reg_sendregister" overwrite="true">1</entry>
+    <entry name="publish" overwrite="true">0</entry>
+    <entry name="avpf" overwrite="true">0</entry>
+    <entry name="push_notification_allowed" overwrite="true">1</entry>
+    <entry name="remote_push_notification_allowed" overwrite="true">1</entry>
+  </section>
+
+  <!-- Habilitar H.264 como códec de video principal para el portero KD9203 -->
+  <section name="video_codec_0" overwrite="true">
+    <entry name="mime" overwrite="true">H264</entry>
+    <entry name="rate" overwrite="true">90000</entry>
+    <entry name="enabled" overwrite="true">1</entry>
+  </section>
+</config>
+
