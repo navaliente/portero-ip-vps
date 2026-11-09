@@ -178,7 +178,7 @@ Tienes dos alternativas listas y compatibles simultáneamente en cada departamen
 
 ## ETAPA 8: Pruebas de Verificación y Diagnóstico
 
-1. **Verificar en el Panel Web (`http://<IP_VPS>:8088/admin`)**:
+1. **Verificar en el Panel Web (`https://vps-6615824-x.dattaweb.com/admin`)**:
    - Comprobar que la extensión `8000` (Frente KD9203) figure como **`Online (1 SIP)`**.
    - Comprobar que el departamento figure como **`Online`**.
 2. **Prueba de Monitoreo desde el Celular**:
@@ -187,4 +187,95 @@ Tienes dos alternativas listas y compatibles simultáneamente en cada departamen
    - Bloquear la pantalla del celular.
    - Marcar `101` en el frente de calle **KD9203**.
    - El celular debe encender la pantalla con la llamada entrante, mostrar el video H.264 al atender y accionar el relé de 12V al tocar **`ABRIR PUERTA (#)`**.
+
+---
+
+## ETAPA 9: Monitores Interiores y Escalabilidad de Departamentos
+
+### 1. ¿Hasta cuántos departamentos soporta cada portero `DS-KD9203-ME6`?
+- **Capacidad de directorio en el frente `DS-KD9203-ME6`**: Soporta hasta **2.000 departamentos / contactos** y hasta **10.000 tarjetas Mifare / rostros**.
+- **Capacidad de tu VPS (`1 vCPU / 2 GB RAM` con Asterisk)**: Soporta cómodamente **entre 150 y 300 departamentos** registrados en simultáneo y hasta **15 videollamadas H.264 al mismo tiempo**.
+- **Sin cableado vertical**: No necesitas tirar cables UTP a cada piso si los vecinos usan la App en su celular o un monitor interior con Wi-Fi conectado al router de cada departamento.
+
+### 2. ¿Qué monitores físicos se pueden poner en un departamento o casa?
+Como el portero trabaja contra tu central Asterisk en la VPS (por Internet), el monitor del departamento **debe soportar registro SIP Estándar (Standard SIP Proxy)** o estar en la misma red LAN del frente:
+
+| Modelo de Monitor | ¿Tiene Wi-Fi? | ¿Sirve conectado al Wi-Fi del vecino hacia la VPS? | Notas de Instalación |
+| :--- | :---: | :---: | :--- |
+| **Hikvision `DS-KH6220-LE1`** | ❌ No (solo cable red + PoE) | ⚠️ Limitado en firmware original | Conviene solo si está cableado al mismo switch local del edificio. |
+| **Hikvision `DS-KH6320-WTE1`** | ✅ **Sí (Wi-Fi + PoE)** | ✅ **Sí** (Configurando *SIP Estándar / PBX*) | Muy estético, pantalla táctil 7". Requiere fuente 12V DC si se usa por Wi-Fi sin cable de red. |
+| **Akuvox `C313W` (7" Linux)** | ✅ **Sí (Wi-Fi + PoE)** | ✅ **100% Nativo SIP + H.264** | **Recomendado para conectar al Wi-Fi del cliente**. 100% compatible con Asterisk VPS y abre con `#`. |
+| **Fanvil `i51W` / `i52W` / `i53W`** | ✅ **Sí (Wi-Fi + PoE)** | ✅ **100% Nativo SIP + H.264** | Se registra como una extensión más (ej. `101`) en el mismo departamento junto con los celulares. |
+
+> **Nota sobre múltiples pantallas y celulares en el mismo departamento**:
+> Gracias al comando `PJSIP_DIAL_CONTACTS` en [`asterisk/extensions.conf`](asterisk/extensions.conf), cuando tocan timbre al **`101`**, suenan **al mismo tiempo** el monitor Wi-Fi de la pared y los celulares de toda la familia registrados con la extensión `101`.
+
+---
+
+## ETAPA 10: Conexión del Switch de Prueba (`ST106PDI-2-65`) y Cambio de Red al Edificio
+
+### 1. Conexión con el Switch PoE `ST106PDI-2-65` (6 puertos: 4 PoE + 2 Uplink)
+- **Importante sobre alimentación del `DS-KD9203-ME6`**: El frente `DS-KD9203-ME6` **no se alimenta por PoE estándar**; siempre lleva **fuente de 12V DC (1A o 2A)** en su bornera trasera (`12V` y `GND`).
+- El switch PoE `ST106PDI-2-65` detecta automáticamente que el portero no pide PoE y **funciona como un switch común de datos sin quemar nada**:
+  - **Puerto `UPLINK 1`**: Cable de red hacia tu Router de Internet.
+  - **Puerto `UPLINK 2` o `PoE 2`**: Cable de red hacia tu PC (para configurar).
+  - **Puerto `PoE 1`**: Cable de red hacia el conector RJ45 del portero `DS-KD9203-ME6`.
+
+### 2. ¿Cómo cambiar de tu Wi-Fi/Red de prueba a la Red del Edificio?
+- En el portero (`DS-KD9203-ME6`) y en los celulares **NO hay que cambiar la IP del servidor**, porque todos apuntan a la IP pública fija de tu VPS (`138.219.41.163` / `vps-6615824-x.dattaweb.com`).
+- Para que el portero funcione en cualquier edificio sin tocarle la red:
+  1. Entrar a `http://192.168.100.186` -> **Configuración** -> **Red** -> **Ajustes Básicos** -> **TCP/IP**.
+  2. Tildar **DHCP (Obtener IP automáticamente)** y verificar que en **DNS Preferido** quede `8.8.8.8` y alternativo `1.1.1.1`.
+  3. Guardar cambios. Al enchufarlo al router del edificio, tomará IP automáticamente y se conectará solo a tu VPS.
+
+---
+
+## ANEXO MAESTRO: Credenciales, Contraseñas y Datos Reales del Sistema
+
+### 1. Servidor VPS (DonWeb / Dattaweb Cloud)
+| Recurso | Dato / Dirección | Usuario | Contraseña / Detalle |
+| :--- | :--- | :--- | :--- |
+| **IP Pública Fija (IPv4)** | `138.219.41.163` | - | Host: `vps-6615824-x.dattaweb.com` |
+| **Acceso SSH al VPS** | `138.219.41.163` (Puerto `5514` o `22`) | `root` | `Coninsur25/` |
+| **CloudPanel (Gestión VPS)** | `https://vps-6615824-x.dattaweb.com:8443` | `navaliente` | `Coninsur25/` (Correo: `alfredonavaliente@gmail.com`) |
+| **Usuario Sitio CloudPanel** | `vps-6615824-x` (FTP/SSH local) | `vps-6615824-x` | `Coninsur25/` |
+
+### 2. Panel Web del Portero y App Web de Vecinos
+| Interfaz / URL | Dirección Web | Usuario | Contraseña |
+| :--- | :--- | :--- | :--- |
+| **Panel Administrador + QR (HTTPS)** | `https://vps-6615824-x.dattaweb.com/admin` | `admin` | `pavuTAre38` |
+| **Panel Administrador (Puerto directo)** | `http://138.219.41.163:8088/admin` | `admin` | `pavuTAre38` |
+| **WebApp Vecino (Depto 101)** | `https://vps-6615824-x.dattaweb.com/vecino?exten=101` | `101` | *(Se autoconfigura desde el link o QR)* |
+| **WebSocket Seguro (WSS WebRTC)** | `wss://vps-6615824-x.dattaweb.com/ws` | - | Puerto interno Asterisk: `8089` (WSS) / `8086` (WS) |
+| **Consola en Vivo Local (Cámara + Relé + Timbre)** | `http://localhost:8090` (o en Wi-Fi: `http://192.168.100.175:8090`) | - | Comando: `node "panel-admin/servidor_local_en_vivo.js"` |
+| **Descarga App Android (`.apk` Local / GitHub)** | `http://192.168.100.175:8090/portero-ip-edificio.apk` | - | Guardado también en [`portero-ip-edificio.apk`](portero-ip-edificio.apk) |
+
+### 3. Cuentas y Contraseñas SIP en Asterisk (`/root/credenciales_portero.txt`)
+*Servidor / Dominio SIP: `138.219.41.163` (o `vps-6615824-x.dattaweb.com`) — Puerto SIP: `5060` (UDP/TCP) y `49160` (TCP alternativo)*
+
+| Extensión / Interno | Dispositivo / Departamento | Usuario SIP / Auth ID | Contraseña SIP | Perfil WebRTC Asociado |
+| :---: | :--- | :---: | :--- | :---: |
+| **`8000`** | **Frente de Calle Hikvision `DS-KD9203-ME6`** | `8000` | **`uJb2YSICXu3Q`** | - |
+| **`101`** | **Departamento 101** | `101` | **`dRNLgy0xrANn`** | `101-webrtc` (misma clave) |
+| **`102`** | **Departamento 102** | `102` | **`0FAPVUVOiMTY`** | `102-webrtc` (misma clave) |
+| **`201`** | **Departamento 201** | `201` | **`MCR3Yupj6T3k`** | `201-webrtc` (misma clave) |
+
+### 4. Frente de Calle Físico (`Hikvision DS-KD9203-ME6`)
+| Parámetro | Valor Configurado |
+| :--- | :--- |
+| **Modelo y Firmware** | `DS-KD9203-ME6` (`V3.5.0 build 241114`) |
+| **Dirección MAC** | `a4:d5:c2:64:37:11` |
+| **IP Local actual (en tu red)** | `http://192.168.100.186` (Máscara `255.255.255.0`, Puerta de enlace `192.168.100.1`) |
+| **Usuario de Administración (Web / iVMS-4200 / SADP)** | `admin` |
+| **Contraseña de Activación del Portero** | **`1234567a`** |
+| **Configuración SIP grabada en el equipo** | Habilitado (`true`), Servidor `138.219.41.163`, Puerto `5060`, Usuario `8000`, Clave `uJb2YSICXu3Q` |
+| **Departamentos precargados en el Portero (`PhoneNumberRecords` y `UserInfo`)** | **`101`** (ID `10010110101`), **`102`** (ID `10010110102`), **`201`** (ID `10010110201`) |
+
+### 5. Reglas que deben estar abiertas en el Firewall Externo de DonWeb (`micuenta.donweb.com`)
+Para que el portero y las llamadas de voz/video atraviesen el firewall perimetral de DonWeb (**Mis Servicios -> Cloud & IaaS -> Firewall**):
+1. **SIP Estándar**: Protocolo **UDP y TCP**, Puerto **`5060`**, Origen `0.0.0.0/0`.
+2. **Audio y Video H.264 (RTP)**: Protocolo **UDP**, Rango de puertos **`10000` a `20000`**, Origen `0.0.0.0/0`.
+3. **Web y Panel QR**: Protocolo **TCP**, Puertos **`80`, `443`, `8088`, `8089`**, Origen `0.0.0.0/0`.
+4. **SSH Administración**: Protocolo **TCP**, Puertos **`22` y `5514`**, Origen `0.0.0.0/0`.
+
 
