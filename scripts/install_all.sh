@@ -42,3 +42,4 @@ echo "  RESUMEN FINAL DE CREDENCIALES Y ACCESOS DEL VPS"
 echo "=================================================================="
 cat /root/credenciales_portero.txt
 echo "=================================================================="
+
