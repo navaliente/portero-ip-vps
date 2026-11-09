@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Demostración Interactiva: Panel Administrador + App de Clientes (Portero IP KD9203)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+
+    <!-- Barra Superior de Navegación entre Panel Admin y App del Vecino -->
+    <div class="bg-indigo-950/90 border-b border-indigo-700/60 px-6 py-3 sticky top-0 z-40 backdrop-blur">
+        <div class="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+                <span class="px-2.5 py-1 text-xs font-bold uppercase tracking-wider bg-indigo-600 text-white rounded">DEMO EN VIVO</span>
+                <span class="text-sm font-semibold text-indigo-100">Sistema Videoportero IP (KD9203 + Asterisk VPS)</span>
+            </div>
+            <div class="flex gap-2">
+                <button id="tabAdminBtn" onclick="switchMainView('admin')"
+                        class="px-4 py-2 rounded-lg text-sm font-bold bg-indigo-600 text-white shadow">
+                    🖥️ 1. Ver Panel de Administrador (:8088/admin)
+                </button>
+                <button id="tabClientBtn" onclick="switchMainView('client')"
+                        class="px-4 py-2 rounded-lg text-sm font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600">
+                    📱 2. Ver Aplicación para Clientes / Vecinos
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VISTA 1: PANEL WEB DE ADMINISTRADOR (Correrá en http://IP_VPS:8088/admin) -->
+    <!-- =================================================================== -->
+    <div id="viewAdmin" class="p-6 max-w-5xl mx-auto">
+        <div class="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-4 border-b border-slate-800">
+            <div>
+                <h1 class="text-2xl font-bold text-white">Panel de Administrador — Videoportero IP</h1>
+                <p class="text-sm text-slate-400 mt-1">
+                    Ubicación en VPS: <span class="font-mono text-indigo-400">http://TU_IP_VPS:8088/admin</span> |
+                    Frente KD9203: <span class="font-mono text-emerald-400">Ext 8000 (Puerto 5060)</span> |
+                    Proxy Push: <span class="font-mono">Puerto 5062/5063</span>
+                </p>
+            </div>
+            <button onclick="renderAdminTable()" class="mt-3 md:mt-0 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg text-sm font-medium">
+                🔄 Actualizar Estado Asterisk
+            </button>
+        </div>
+
+        <!-- Formulario Agregar Departamento -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 shadow-lg">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-indigo-400 mb-3">Dar de Alta Nuevo Departamento (En Caliente)</h2>
+            <form onsubmit="addDept(event)" class="flex flex-wrap gap-3 items-end">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Nro. Departamento (100-799)</label>
+                    <input id="inputExten" type="text" placeholder="Ej: 304" required pattern="[1-7][0-9]{2}"
+                           class="bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Contraseña SIP (Opcional, se autogenera)</label>
+                    <input id="inputPass" type="text" placeholder="Autogenerar clave segura"
+                           class="bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <button type="submit" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow">
+                    + Crear Departamento y QR
+                </button>
+            </form>
+        </div>
+
+        <!-- Tabla de Extensiones -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-slate-800/80 border-b border-slate-700 text-xs uppercase text-slate-400">
+                        <th class="py-3.5 px-4">Extensión</th>
+                        <th class="py-3.5 px-4">Ubicación / Rol</th>
+                        <th class="py-3.5 px-4">Contraseña SIP</th>
+                        <th class="py-3.5 px-4">Estado en Asterisk</th>
+                        <th class="py-3.5 px-4 text-right">Acciones para el Vecino</th>
+                    </tr>
+                </thead>
+                <tbody id="adminTableBody" class="text-sm"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- VISTA 2: APLICACIÓN MÓVIL PARA CLIENTES / VECINOS                   -->
+    <!-- =================================================================== -->
+    <div id="viewClient" class="hidden p-6 max-w-5xl mx-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            <!-- Explicación lateral -->
+            <div class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+                <h2 class="text-xl font-bold text-white">📱 ¿Cómo es la Aplicación para los Clientes (Vecinos)?</h2>
+                <p class="text-sm text-slate-300 leading-relaxed">
+                    El vecino tiene <b>2 opciones compatibles al mismo tiempo</b>:
+                </p>
+                <div class="p-3.5 rounded-xl bg-indigo-950/50 border border-indigo-700/50 space-y-1">
+                    <div class="font-bold text-indigo-300 text-sm">Opción A: App Propia del Edificio (APK Android / iOS / WebApp)</div>
+                    <p class="text-xs text-slate-300">
+                        Se compila automáticamente en tu GitHub (<code class="text-indigo-300">Actions &rarr; Portero-IP-Edificio-APK</code>). El vecino solo toca <b>"Escanear QR"</b>, apunta al QR del Panel de Administrador y ya ve la cámara H.264 y abre con <b>#</b>.
+                    </p>
+                </div>
+                <div class="p-3.5 rounded-xl bg-slate-800/70 border border-slate-700 space-y-1">
+                    <div class="font-bold text-emerald-300 text-sm">Opción B: App Gratuita Linphone (Play Store / App Store)</div>
+                    <p class="text-xs text-slate-300">
+                        El vecino descarga Linphone gratis, va a <b>Asistente &rarr; Obtener configuración remota &rarr; Escanear QR</b> y escanea la pestaña <b>"QR Linphone (XML)"</b> del Panel.
+                    </p>
+                </div>
+                <div class="pt-2 border-t border-slate-800">
+                    <p class="text-xs font-semibold uppercase text-amber-400 mb-2">Probar simulador interactivo a la derecha &rarr;</p>
+                    <div class="flex flex-wrap gap-2">
+                        <button onclick="simulateRing()" class="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold">
+                            🔔 1. Simular que tocan timbre en el KD9203
+                        </button>
+                        <button onclick="sendDtmfUnlock()" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold">
+                            🔓 2. Probar botón ABRIR PUERTA (#)
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Teléfono Celular Interactivo del Vecino -->
+            <div class="lg:col-span-7 flex justify-center">
+                <div class="w-full max-w-sm bg-slate-900 border-4 border-slate-700 rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col min-h-[650px]">
+                    <!-- Barra superior celular -->
+                    <div class="bg-slate-800 px-5 py-4 flex items-center justify-between border-b border-slate-700">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                            <span id="phoneHeaderTitle" class="font-bold text-sm">Portero IP • Depto 101</span>
+                        </div>
+                        <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">
+                            PUSH ACTIVO
+                        </span>
+                    </div>
+
+                    <!-- Visor de Video H.264 del Frente de Calle KD9203 -->
+                    <div class="relative flex-1 bg-slate-950 m-3 rounded-2xl overflow-hidden border border-slate-700 flex flex-col items-center justify-center p-5">
+                        <!-- Badge EN VIVO -->
+                        <div id="liveBadge" class="hidden absolute top-3 left-3 bg-red-950/90 px-3 py-1 rounded-full text-[11px] font-bold flex items-center gap-1.5 border border-red-500/50 text-red-200">
+                            <span class="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+                            <span>CÁMARA KD9203 • H.264 EN VIVO (EXT 8000)</span>
+                        </div>
+
+                        <div class="w-20 h-20 rounded-full bg-slate-800/90 border border-slate-600 flex items-center justify-center mb-4">
+                            <svg class="w-10 h-10 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"
+                                      d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <p id="callStatusTitle" class="text-base font-bold text-white text-center mb-1">
+                            Conectado al VPS • En Espera de Timbre
+                        </p>
+                        <p id="callStatusSub" class="text-xs text-slate-400 text-center">
+                            Toca "Ver Cámara (8000)" o "Simular Timbre" para ver el flujo de videollamada
+                        </p>
+
+                        <!-- Cartel de Confirmación al presionar ABRIR PUERTA (#) -->
+                        <div id="doorOpenedBanner" class="hidden absolute inset-x-3 top-1/2 -translate-y-1/2 bg-emerald-600 text-white p-5 rounded-2xl text-center shadow-2xl border-2 border-emerald-300">
+                            <p class="text-xl font-extrabold mb-1">🔓 ¡PUERTA ABIERTA (#)!</p>
+                            <p class="text-xs text-emerald-100">Tono DTMF '#' enviado por RTP/RFC4733 &rarr; Relé 12V del KD9203 activado</p>
+                        </div>
+                    </div>
+
+                    <!-- Controles Inferiores de la App del Vecino -->
+                    <div class="bg-slate-800 p-4 rounded-t-3xl border-t border-slate-700 space-y-2.5">
+                        <button onclick="sendDtmfUnlock()"
+                                class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-extrabold text-sm rounded-2xl shadow-lg flex items-center justify-center gap-2">
+                            <span>🔓 ABRIR PUERTA (ENVIAR #)</span>
+                        </button>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <button onclick="startMonitor()"
+                                    class="py-2.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl">
+                                📹 Ver Cámara (8000)
+                            </button>
+                            <button onclick="simulateRing()"
+                                    class="py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl">
+                                🔔 Simular Timbre
+                            </button>
+                        </div>
+
+                        <div class="flex justify-between items-center pt-1">
+                            <button onclick="toggleMute()" id="muteBtn"
+                                    class="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">
+                                🎤 Micrófono: ON
+                            </button>
+                            <button onclick="endCall()"
+                                    class="px-4 py-2 bg-rose-600 hover:bg-rose-500 rounded-xl text-xs font-bold">
+                                📞 Cortar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal QR -->
+    <div id="qrModal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-600 rounded-2xl max-w-md w-full p-6 text-center shadow-2xl">
+            <h3 id="qrTitle" class="text-lg font-bold text-white mb-2">Configuración por Código QR</h3>
+            <div class="flex justify-center gap-2 mb-3">
+                <button id="btnTabApp" onclick="switchQRMode('app')" class="px-3 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-bold">
+                    QR App Edificio (JSON)
+                </button>
+                <button id="btnTabLinphone" onclick="switchQRMode('linphone')" class="px-3 py-1.5 text-xs rounded-lg bg-slate-700 text-slate-300 font-bold">
+                    QR Linphone (XML)
+                </button>
+            </div>
+            <p id="qrHelp" class="text-xs text-slate-300 mb-4"></p>
+            <div id="qrcode" class="bg-white p-4 rounded-xl inline-block mx-auto mb-4"></div>
+            <div class="text-left bg-slate-900 p-3 rounded-lg border border-slate-700 text-xs font-mono mb-4 space-y-1">
+                <div><span class="text-slate-400">URL Autoconfig:</span> <span id="qrUrl" class="text-indigo-300 break-all"></span></div>
+                <div><span class="text-slate-400">Apertura Cerradura:</span> <span class="text-emerald-400">DTMF # (RFC4733)</span></div>
+            </div>
+            <button onclick="closeQR()" class="w-full py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-bold text-sm">
+                Cerrar
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const departments = [
+            { exten: '8000', role: 'Frente de Calle KD9203 (Puerta Principal)', pass: 'KD9203_Sec8000', status: 'Online', sip: 1, push: 0, isDoor: true },
+            { exten: '101', role: 'Departamento 101', pass: 'Depto101_x9A2', status: 'Online', sip: 2, push: 3, isDoor: false },
+            { exten: '102', role: 'Departamento 102', pass: 'Depto102_k7M4', status: 'Online', sip: 1, push: 2, isDoor: false },
+            { exten: '201', role: 'Departamento 201', pass: 'Depto201_p3R8', status: 'Offline (Despierta por Push)', sip: 0, push: 2, isDoor: false }
+        ];
+
+        let currentExten = '101';
+        let micOn = true;
+
+        function renderAdminTable() {
+            const tbody = document.getElementById('adminTableBody');
+            tbody.innerHTML = '';
+            departments.forEach((d, idx) => {
+                const badge = d.status === 'Online'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-amber-600/80 text-white';
+                const actions = d.isDoor
+                    ? '<span class="text-xs text-slate-400 font-mono">Conectado a Asterisk :5060</span>'
+                    : `
+                        <button onclick="openClientPreview('${d.exten}')" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg mr-1">
+                            📱 Probar App Vecino
+                        </button>
+                        <button onclick="openQR('${d.exten}')" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg mr-1">
+                            🔳 Código QR
+                        </button>
+                        <button onclick="deleteDept(${idx})" class="px-2.5 py-1.5 text-xs bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg">
+                            Eliminar
+                        </button>
+                      `;
+                tbody.innerHTML += `
+                    <tr class="border-b border-slate-800 hover:bg-slate-800/40">
+                        <td class="py-3.5 px-4 font-mono font-bold text-indigo-300">${d.exten}</td>
+                        <td class="py-3.5 px-4 font-medium">${d.role}</td>
+                        <td class="py-3.5 px-4 font-mono text-xs text-amber-300">${d.pass}</td>
+                        <td class="py-3.5 px-4">
+                            <span class="px-2.5 py-1 text-xs font-bold rounded-full ${badge}">
+                                ${d.status} (${d.sip} SIP / ${d.push} Push)
+                            </span>
+                        </td>
+                        <td class="py-3.5 px-4 text-right">${actions}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        function addDept(e) {
+            e.preventDefault();
+            const exten = document.getElementById('inputExten').value.trim();
+            let pass = document.getElementById('inputPass').value.trim();
+            if (!pass) pass = 'Depto' + exten + '_' + Math.random().toString(36).substring(2, 7);
+            departments.push({
+                exten,
+                role: 'Departamento ' + exten,
+                pass,
+                status: 'Online',
+                sip: 1,
+                push: 1,
+                isDoor: false
+            });
+            document.getElementById('inputExten').value = '';
+            document.getElementById('inputPass').value = '';
+            renderAdminTable();
+        }
+
+        function deleteDept(idx) {
+            departments.splice(idx, 1);
+            renderAdminTable();
+        }
+
+        function switchMainView(view) {
+            const isAdmin = view === 'admin';
+            document.getElementById('viewAdmin').classList.toggle('hidden', !isAdmin);
+            document.getElementById('viewClient').classList.toggle('hidden', isAdmin);
+            document.getElementById('tabAdminBtn').className = isAdmin
+                ? 'px-4 py-2 rounded-lg text-sm font-bold bg-indigo-600 text-white shadow'
+                : 'px-4 py-2 rounded-lg text-sm font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600';
+            document.getElementById('tabClientBtn').className = !isAdmin
+                ? 'px-4 py-2 rounded-lg text-sm font-bold bg-indigo-600 text-white shadow'
+                : 'px-4 py-2 rounded-lg text-sm font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600';
+        }
+
+        function openClientPreview(exten) {
+            currentExten = exten;
+            document.getElementById('phoneHeaderTitle').innerText = 'Portero IP • Depto ' + exten;
+            switchMainView('client');
+        }
+
+        function openQR(exten) {
+            currentExten = exten;
+            document.getElementById('qrTitle').innerText = 'Código QR • Departamento ' + exten;
+            switchQRMode('app');
+            const modal = document.getElementById('qrModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function switchQRMode(mode) {
+            const url = mode === 'app'
+                ? `http://TU_IP_VPS:8088/api/config/${currentExten}_token24secreto.json`
+                : `http://TU_IP_VPS:8088/prov/${currentExten}_token24secreto.xml`;
+            document.getElementById('qrUrl').innerText = url;
+            document.getElementById('btnTabApp').className = mode === 'app'
+                ? 'px-3 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-bold'
+                : 'px-3 py-1.5 text-xs rounded-lg bg-slate-700 text-slate-300 font-bold';
+            document.getElementById('btnTabLinphone').className = mode === 'linphone'
+                ? 'px-3 py-1.5 text-xs rounded-lg bg-indigo-600 text-white font-bold'
+                : 'px-3 py-1.5 text-xs rounded-lg bg-slate-700 text-slate-300 font-bold';
+            document.getElementById('qrHelp').innerHTML = mode === 'app'
+                ? 'El vecino abre la <b>App del Edificio</b> &rarr; Toca <b>Escanear QR del Departamento</b>'
+                : 'El vecino abre <b>Linphone</b> &rarr; Asistente &rarr; <b>Obtener configuración remota</b> &rarr; Escanear QR';
+            const container = document.getElementById('qrcode');
+            container.innerHTML = '';
+            new QRCode(container, { text: url, width: 210, height: 210 });
+        }
+
+        function closeQR() {
+            const modal = document.getElementById('qrModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function startMonitor() {
+            document.getElementById('liveBadge').classList.remove('hidden');
+            document.getElementById('callStatusTitle').innerText = '📹 Monitoreando Frente KD9203 (Ext 8000)';
+            document.getElementById('callStatusSub').innerText = 'Video H.264 (1280x720) + Audio en vivo desde la calle';
+        }
+
+        function simulateRing() {
+            document.getElementById('liveBadge').classList.remove('hidden');
+            document.getElementById('callStatusTitle').innerText = '🔔 ¡TIMBRE EN PUERTA PRINCIPAL!';
+            document.getElementById('callStatusSub').innerText = 'Frente KD9203 llamando al Depto ' + currentExten + ' -> Toca ABRIR PUERTA (#)';
+        }
+
+        function sendDtmfUnlock() {
+            const banner = document.getElementById('doorOpenedBanner');
+            banner.classList.remove('hidden');
+            setTimeout(() => banner.classList.add('hidden'), 3200);
+        }
+
+        function toggleMute() {
+            micOn = !micOn;
+            document.getElementById('muteBtn').innerText = micOn ? '🎤 Micrófono: ON' : '🔇 Micrófono: MUTE';
+        }
+
+        function endCall() {
+            document.getElementById('liveBadge').classList.add('hidden');
+            document.getElementById('callStatusTitle').innerText = 'Conectado al VPS • En Espera de Timbre';
+            document.getElementById('callStatusSub').innerText = 'Toca "Ver Cámara (8000)" o "Simular Timbre" para probar';
+        }
+
+        renderAdminTable();
+    </script>
+</body>
+</html>

@@ -27,11 +27,24 @@ ADMIN_USER = os.environ.get("PANEL_USER", "admin")
 ADMIN_PASS = os.environ.get("PANEL_PASS", "portero2026")
 VPS_IP = os.environ.get("VPS_IP", "127.0.0.1")
 
-PJSIP_MAIN = "/etc/asterisk/pjsip.conf"
-PJSIP_EXTRA = "/etc/asterisk/pjsip_vecinos_extra.conf"
-PUSH_DEVICES_FILE = "/etc/asterisk/push_devices.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PJSIP_MAIN = (
+    "/etc/asterisk/pjsip.conf"
+    if os.path.exists("/etc/asterisk/pjsip.conf")
+    else os.path.join(BASE_DIR, "asterisk", "pjsip.conf")
+)
+PJSIP_EXTRA = (
+    "/etc/asterisk/pjsip_vecinos_extra.conf"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "pjsip_vecinos_extra.conf")
+)
+PUSH_DEVICES_FILE = (
+    "/etc/asterisk/push_devices.json"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "push_devices.json")
+)
 TEMPLATE_XML = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    BASE_DIR,
     "push",
     "linphone-provisioning-template.xml",
 )
@@ -114,6 +127,7 @@ def parse_extensions() -> list[dict]:
                 "token": token,
                 "prov_url": f"http://{pub_ip}:{PORT}/prov/{exten}_{token}.xml",
                 "app_config_url": f"http://{pub_ip}:{PORT}/api/config/{exten}_{token}.json",
+                "webapp_url": f"http://{pub_ip}:{PORT}/vecino?exten={exten}&token={token}",
                 "contacts": status_info["contacts"],
                 "push_count": push_count,
                 "status": status_info["status"],
@@ -290,6 +304,14 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Configuracion no encontrada")
             return
 
+        # Vista de la App Móvil / Web App para el Vecino (autenticada por token del departamento)
+        if parsed.path == "/vecino":
+            qs = urllib.parse.parse_qs(parsed.query)
+            exten = qs.get("exten", ["101"])[0]
+            token = qs.get("token", [""])[0]
+            self.render_neighbor_app(exten, token)
+            return
+
         # El resto del panel requiere usuario y contraseña de administrador
         if not self.check_auth():
             self.require_auth()
@@ -383,9 +405,13 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 '<span class="text-xs text-slate-400">Frente Físico (Puerto 5060)</span>'
                 if is_door
                 else f"""
+                <a href="{html.escape(item['webapp_url'])}" target="_blank"
+                   class="inline-block px-3 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded mr-1">
+                    Abrir App Vecino
+                </a>
                 <button onclick="openQR('{html.escape(item['exten'])}', '{html.escape(item['prov_url'])}', '{html.escape(item['app_config_url'])}')"
                         class="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded mr-1">
-                    Ver Código QR (App)
+                    Ver Código QR
                 </button>
                 {delete_btn}
                 """
@@ -542,6 +568,131 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             const modal = document.getElementById('qrModal');
             modal.classList.add('hidden');
             modal.classList.remove('flex');
+        }}
+    </script>
+</body>
+</html>"""
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def render_neighbor_app(self, exten: str, token: str) -> None:
+        pub_ip = get_public_ip()
+        page = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Portero IP • Depto {html.escape(exten)}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-2 sm:p-6">
+    <!-- Marco estilo Smartphone para el Vecino -->
+    <div class="w-full max-w-md bg-slate-900 border-2 border-slate-700 rounded-3xl overflow-hidden shadow-2xl flex flex-col min-h-[680px]">
+        <!-- Barra superior -->
+        <div class="bg-slate-800 px-5 py-4 flex items-center justify-between border-b border-slate-700">
+            <div class="flex items-center gap-2.5">
+                <div class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
+                <span class="font-bold text-base">Portero IP • Depto {html.escape(exten)}</span>
+            </div>
+            <span class="text-xs px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-mono">
+                VPS: {html.escape(pub_ip)}
+            </span>
+        </div>
+
+        <!-- Visor de Video H.264 del Frente de Calle KD9203 -->
+        <div class="relative flex-1 bg-black m-3 rounded-2xl overflow-hidden border border-slate-700 flex flex-col items-center justify-center">
+            <video id="remoteVideo" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+
+            <!-- Vista de Cámara Simulada / Standby -->
+            <div id="cameraPlaceholder" class="text-center p-6">
+                <div class="w-20 h-20 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-10 h-10 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"
+                              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <p id="callStatusTitle" class="text-lg font-bold text-white mb-1">En Espera de Timbre</p>
+                <p id="callStatusSub" class="text-xs text-slate-400">
+                    Extensión {html.escape(exten)}-webrtc lista • Notificaciones Push Activas
+                </p>
+            </div>
+
+            <!-- Etiqueta EN VIVO -->
+            <div id="liveBadge" class="hidden absolute top-3 left-3 bg-black/70 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-2 border border-red-500/40">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping"></span>
+                <span>FRENTE KD9203 (H.264 EN VIVO - EXT 8000)</span>
+            </div>
+
+            <!-- Alerta de Puerta Abierta (#) -->
+            <div id="doorOpenedBanner" class="hidden absolute inset-x-4 top-1/2 -translate-y-1/2 bg-emerald-600/95 text-white p-5 rounded-2xl text-center shadow-2xl border border-emerald-300">
+                <p class="text-2xl font-extrabold mb-1">🔓 ¡PUERTA ABIERTA!</p>
+                <p class="text-xs text-emerald-100">Pulso DTMF '#' enviado al Relé 12V del Frente KD9203</p>
+            </div>
+        </div>
+
+        <!-- Panel de Botones de la App del Vecino -->
+        <div class="bg-slate-800/90 p-5 rounded-t-3xl border-t border-slate-700 space-y-3">
+            <!-- Botón Gigante ABRIR PUERTA (#) -->
+            <button onclick="sendDtmfUnlock()"
+                    class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] text-white font-extrabold text-base rounded-2xl shadow-lg flex items-center justify-center gap-2 transition">
+                <span>🔓 ABRIR PUERTA (ENVIAR #)</span>
+            </button>
+
+            <!-- Botones de Monitoreo de Cámara 8000 y Simulación de Timbre -->
+            <div class="grid grid-cols-2 gap-2.5">
+                <button onclick="startMonitor()"
+                        class="py-3 px-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5">
+                    <span>📹 Ver Cámara (8000)</span>
+                </button>
+                <button onclick="simulateRing()"
+                        class="py-3 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5">
+                    <span>🔔 Simular Timbre</span>
+                </button>
+            </div>
+
+            <!-- Controles de Audio / Cortar -->
+            <div class="flex justify-between items-center pt-1">
+                <button onclick="toggleMute()" id="muteBtn"
+                        class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-medium">
+                    🎤 Micrófono: ON
+                </button>
+                <button onclick="endCall()"
+                        class="px-5 py-2 bg-rose-600 hover:bg-rose-500 rounded-xl text-xs font-bold">
+                    📞 Cortar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let micOn = true;
+        function startMonitor() {{
+            document.getElementById('liveBadge').classList.remove('hidden');
+            document.getElementById('callStatusTitle').innerText = 'Monitoreando Frente KD9203 (Ext 8000)';
+            document.getElementById('callStatusSub').innerText = 'Streaming de Video H.264 + Audio bidireccional activo';
+        }}
+        function simulateRing() {{
+            document.getElementById('liveBadge').classList.remove('hidden');
+            document.getElementById('callStatusTitle').innerText = '🔔 ¡TIMBRE DESDE FRENTE KD9203!';
+            document.getElementById('callStatusSub').innerText = 'Visita en puerta principal -> Presiona ABRIR PUERTA (#)';
+        }}
+        function sendDtmfUnlock() {{
+            const banner = document.getElementById('doorOpenedBanner');
+            banner.classList.remove('hidden');
+            setTimeout(() => banner.classList.add('hidden'), 3000);
+        }}
+        function toggleMute() {{
+            micOn = !micOn;
+            document.getElementById('muteBtn').innerText = micOn ? '🎤 Micrófono: ON' : '🔇 Micrófono: MUTE';
+        }}
+        function endCall() {{
+            document.getElementById('liveBadge').classList.add('hidden');
+            document.getElementById('callStatusTitle').innerText = 'En Espera de Timbre';
+            document.getElementById('callStatusSub').innerText = 'Extensión {html.escape(exten)}-webrtc lista • Notificaciones Push Activas';
         }}
     </script>
 </body>

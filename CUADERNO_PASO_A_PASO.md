@@ -187,3 +187,4 @@ Tienes dos alternativas listas y compatibles simultáneamente en cada departamen
    - Bloquear la pantalla del celular.
    - Marcar `101` en el frente de calle **KD9203**.
    - El celular debe encender la pantalla con la llamada entrante, mostrar el video H.264 al atender y accionar el relé de 12V al tocar **`ABRIR PUERTA (#)`**.
+
