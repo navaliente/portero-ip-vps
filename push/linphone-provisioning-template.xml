@@ -30,9 +30,9 @@
   </section>
 
   <section name="proxy_0" overwrite="true">
-    <!-- Conecta a través del Proxy Push Flexisip en el puerto 5062 TCP -->
-    <entry name="reg_proxy" overwrite="true">&lt;sip:__VPS_IP__:5062;transport=tcp&gt;</entry>
-    <entry name="reg_route" overwrite="true">&lt;sip:__VPS_IP__:5062;transport=tcp;lr&gt;</entry>
+    <!-- Conecta a través de Asterisk SIP en el puerto 5060 TCP -->
+    <entry name="reg_proxy" overwrite="true">&lt;sip:__VPS_IP__:5060;transport=tcp&gt;</entry>
+    <entry name="reg_route" overwrite="true">&lt;sip:__VPS_IP__:5060;transport=tcp;lr&gt;</entry>
     <entry name="reg_identity" overwrite="true">"Depto __EXTEN__" &lt;sip:__EXTEN__@__VPS_IP__&gt;</entry>
     <entry name="reg_expires" overwrite="true">604800</entry>
     <entry name="reg_sendregister" overwrite="true">1</entry>

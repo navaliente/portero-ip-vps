@@ -79,6 +79,14 @@ def save_push_device(exten: str, token: str, platform: str, device_name: str = "
         json.dump(data, f, indent=2)
 
 
+def get_base_web_url() -> str:
+    domain = os.environ.get("VPS_DOMAIN", "vps-6615824-x.dattaweb.com")
+    if domain:
+        return f"https://{domain}"
+    pub_ip = get_public_ip()
+    return f"http://{pub_ip}:{PORT}"
+
+
 def get_public_ip() -> str:
     if VPS_IP and VPS_IP != "127.0.0.1":
         return VPS_IP
@@ -113,6 +121,7 @@ def parse_extensions() -> list[dict]:
 
     extensions = []
     pub_ip = get_public_ip()
+    base_url = get_base_web_url()
     for exten, body in auth_blocks:
         m_pass = re.search(r"^password\s*=\s*(.+)$", body, flags=re.MULTILINE)
         password = m_pass.group(1).strip() if m_pass else ""
@@ -125,9 +134,9 @@ def parse_extensions() -> list[dict]:
                 "role": "Frente de Calle KD9203" if exten == "8000" else f"Departamento {exten}",
                 "password": password,
                 "token": token,
-                "prov_url": f"http://{pub_ip}:{PORT}/prov/{exten}_{token}.xml",
-                "app_config_url": f"http://{pub_ip}:{PORT}/api/config/{exten}_{token}.json",
-                "webapp_url": f"http://{pub_ip}:{PORT}/vecino?exten={exten}&token={token}",
+                "prov_url": f"{base_url}/prov/{exten}_{token}.xml",
+                "app_config_url": f"{base_url}/api/config/{exten}_{token}.json",
+                "webapp_url": f"{base_url}/vecino?exten={exten}&token={token}",
                 "contacts": status_info["contacts"],
                 "push_count": push_count,
                 "status": status_info["status"],
@@ -282,17 +291,19 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             for item in parse_extensions():
                 if item["exten"] == exten and item["token"] == token:
                     pub_ip = get_public_ip()
+                    base_url = get_base_web_url()
+                    domain = os.environ.get("VPS_DOMAIN", "vps-6615824-x.dattaweb.com")
                     payload = {
                         "exten": exten,
                         "password": item["password"],
                         "sip_host": pub_ip,
                         "sip_port": 5060,
-                        "push_proxy_port": 5062,
-                        "ws_url": f"ws://{pub_ip}:8086/ws",
-                        "wss_url": f"wss://{pub_ip}:8089/ws",
+                        "push_proxy_port": 5060,
+                        "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
+                        "wss_url": f"wss://{domain}/ws" if domain else f"wss://{pub_ip}:8089/ws",
                         "door_exten": "8000",
                         "dtmf_unlock": "#",
-                        "push_register_url": f"http://{pub_ip}:{PORT}/api/register-push",
+                        "push_register_url": f"{base_url}/api/register-push",
                     }
                     body = json.dumps(payload).encode("utf-8")
                     self.send_response(200)
