@@ -47,7 +47,7 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
       hasActiveCall &&
       (callState == CallStateEnum.PROGRESS ||
           callState == CallStateEnum.CALL_INITIATION) &&
-      activeCall?.direction == 'INCOMING';
+      activeCall?.direction == Direction.incoming;
 
   String get formattedCallDuration {
     final m = (callDurationSeconds ~/ 60).toString().padLeft(2, '0');
@@ -330,7 +330,8 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
     activeCall = call;
     callState = state.state;
 
-    if (state.state == CallStateEnum.PROGRESS && call.direction == 'INCOMING') {
+    if (state.state == CallStateEnum.PROGRESS &&
+        call.direction == Direction.incoming) {
       _currentCallIsOutgoing = false;
       _currentCallWasAnswered = false;
       HapticFeedback.vibrate();
@@ -345,7 +346,7 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
         );
       }
     } else if (state.state == CallStateEnum.STREAM && state.stream != null) {
-      if (state.originator == 'remote') {
+      if (state.originator == Originator.remote) {
         remoteRenderer.srcObject = state.stream;
         Helper.setSpeakerphoneOn(true);
       }
@@ -380,6 +381,12 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
 
   @override
   void onNewMessage(SIPMessageRequest msg) {}
+
+  @override
+  void onNewNotify(Notify ntf) {}
+
+  @override
+  void onNewReinvite(ReInvite event) {}
 
   @override
   void dispose() {
