@@ -3,16 +3,16 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:sip_ua/sip_ua.dart';
 import 'package:uuid/uuid.dart';
 
+import 'screens/access_control_screen.dart';
+import 'screens/active_call_screen.dart';
+import 'screens/activity_screen.dart';
 import 'screens/qr_scan_screen.dart';
+import 'screens/settings_screen.dart';
 import 'services/intercom_service.dart';
+import 'widgets/brand_graphics.dart';
 
-/// Handler de segundo plano (Pantalla apagada / Android Doze / iOS CallKit)
-/// Cuando Asterisk ejecuta push_wakeup.py, este handler despierta el teléfono con
-/// pantalla completa de llamada entrante nativa.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
@@ -22,7 +22,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final data = message.data;
   if (data['type'] == 'incoming_intercom_call') {
     await showNativeIncomingCall(
-      callerName: data['caller_name']?.toString() ?? 'Portero Edificio',
+      callerName: data['caller_name']?.toString() ?? 'Timbre Portero Edificio',
       callerNumber: data['caller']?.toString() ?? '8000',
     );
   }
@@ -38,15 +38,15 @@ Future<void> showNativeIncomingCall({
     nameCaller: callerName,
     appName: 'Portero IP',
     handle: callerNumber,
-    type: 1, // 1 = Videollamada H.264
+    type: 1,
     textAccept: 'Atender Video',
     textDecline: 'Rechazar',
-    duration: 40000,
+    duration: 45000,
     android: const AndroidParams(
       isCustomNotification: true,
-      isShowLogo: false,
+      isShowLogo: true,
       ringtonePath: 'system_ringtone_default',
-      backgroundColor: '#0F172A',
+      backgroundColor: '#090D16',
       actionColor: '#10B981',
       textColor: '#FFFFFF',
       incomingCallNotificationChannelName: 'Timbre Videoportero',
@@ -73,9 +73,7 @@ void main() async {
     final messaging = FirebaseMessaging.instance;
     await messaging.requestPermission(alert: true, sound: true, badge: true);
     fcmToken = await messaging.getToken();
-  } catch (_) {
-    // Permite probar la app en modo SIP/WebRTC local aun antes de agregar google-services.json
-  }
+  } catch (_) {}
 
   final intercomService = IntercomService();
   await intercomService.init();
@@ -97,11 +95,34 @@ class PorteroIpApp extends StatelessWidget {
     return MaterialApp(
       title: 'Portero IP Edificio',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
+      theme: ThemeData.dark(useMaterial3: true).copyWith(
+        scaffoldBackgroundColor: const Color(0xFF090D16),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF6366F1),
           secondary: Color(0xFF10B981),
+          surface: Color(0xFF111827),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: const Color(0xFF0F172A),
+          indicatorColor: const Color(0xFF4F46E5).withOpacity(0.28),
+          labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return TextStyle(
+              fontSize: 11,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected
+                  ? const Color(0xFF818CF8)
+                  : const Color(0xFF94A3B8),
+            );
+          }),
+          iconTheme: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return IconThemeData(
+              color: selected
+                  ? const Color(0xFF818CF8)
+                  : const Color(0xFF94A3B8),
+            );
+          }),
         ),
       ),
       home: IntercomHomePage(intercom: intercom, fcmToken: fcmToken),
@@ -122,6 +143,7 @@ class IntercomHomePage extends StatefulWidget {
 class _IntercomHomePageState extends State<IntercomHomePage>
     with WidgetsBindingObserver {
   IntercomService get _svc => widget.intercom;
+  int _selectedTab = 0;
 
   @override
   void initState() {
@@ -146,7 +168,6 @@ class _IntercomHomePageState extends State<IntercomHomePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Al despertar la app desde una notificación Push, asegurar registro SIP inmediato
     if (state == AppLifecycleState.resumed) {
       if (!_svc.isRegistered) {
         _svc.connectSip();
@@ -178,7 +199,7 @@ class _IntercomHomePageState extends State<IntercomHomePage>
           SnackBar(
             backgroundColor: const Color(0xFF059669),
             content: Text(
-              'Departamento ${_svc.config?.exten} configurado correctamente.',
+              'Departamento ${_svc.config?.exten} vinculado correctamente.',
             ),
           ),
         );
@@ -187,7 +208,7 @@ class _IntercomHomePageState extends State<IntercomHomePage>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            backgroundColor: Colors.redAccent,
+            backgroundColor: const Color(0xFFDC2626),
             content: Text('Error al configurar desde QR: $e'),
           ),
         );
@@ -198,85 +219,222 @@ class _IntercomHomePageState extends State<IntercomHomePage>
   @override
   Widget build(BuildContext context) {
     final cfg = _svc.config;
+    final inCall = _svc.hasActiveCall;
+
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1E293B),
+        backgroundColor: const Color(0xFF0F172A),
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleSpacing: 16,
         title: Row(
           children: [
-            const Icon(Icons.videocam_rounded, color: Color(0xFF818CF8)),
-            const SizedBox(width: 10),
-            Text(
-              cfg != null ? 'Portero IP • Depto ${cfg.exten}' : 'Portero IP',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            const BrandAppLogo(size: 38),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    cfg != null ? 'Depto ${cfg.exten}' : 'Portero IP',
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                    ),
+                  ),
+                  Text(
+                    cfg != null
+                        ? 'Frente KD9203 • ${cfg.sipHost}'
+                        : 'Sin vincular al edificio',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF94A3B8),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'Escanear QR del Departamento',
-            icon: const Icon(Icons.qr_code_scanner_rounded),
-            onPressed: _scanQrCode,
-          ),
+          if (!inCall)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: IconButton(
+                tooltip: 'Escanear QR del Departamento',
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E293B),
+                  foregroundColor: const Color(0xFF38BDF8),
+                ),
+                icon: const Icon(Icons.qr_code_scanner_rounded, size: 22),
+                onPressed: _scanQrCode,
+              ),
+            ),
         ],
       ),
-      body: _svc.hasActiveCall ? _buildActiveCallView() : _buildIdleDashboard(),
+      body: inCall
+          ? ActiveCallScreen(svc: _svc)
+          : IndexedStack(
+              index: _selectedTab,
+              children: [
+                _buildHomeTab(),
+                ActivityScreen(svc: _svc),
+                AccessControlScreen(svc: _svc),
+                SettingsScreen(
+                  svc: _svc,
+                  fcmToken: widget.fcmToken,
+                  onScanQr: _scanQrCode,
+                ),
+              ],
+            ),
+      bottomNavigationBar: inCall
+          ? null
+          : NavigationBar(
+              selectedIndex: _selectedTab,
+              onDestinationSelected: (i) => setState(() => _selectedTab = i),
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.doorbell_outlined),
+                  selectedIcon: Icon(Icons.doorbell_rounded),
+                  label: 'Portero',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.history_outlined),
+                  selectedIcon: Icon(Icons.history_rounded),
+                  label: 'Actividad',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.face_retouching_natural_outlined),
+                  selectedIcon: Icon(Icons.face_retouching_natural_rounded),
+                  label: 'Accesos',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.tune_outlined),
+                  selectedIcon: Icon(Icons.tune_rounded),
+                  label: 'Ajustes',
+                ),
+              ],
+            ),
     );
   }
 
-  Widget _buildIdleDashboard() {
+  Widget _buildHomeTab() {
     final cfg = _svc.config;
     final online = _svc.isRegistered;
 
-    return Padding(
-      padding: const EdgeInsets.all(20),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Tarjeta de Estado SIP + Push
+          // Hero Card de Conexión
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E293B),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: online ? const Color(0xFF10B981) : const Color(0xFF475569),
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF1E293B),
+                  const Color(0xFF0F172A),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-            ),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 22,
-                  backgroundColor:
-                      online ? const Color(0xFF065F46) : const Color(0xFF334155),
-                  child: Icon(
-                    online ? Icons.check_circle : Icons.cloud_off,
-                    color: online ? const Color(0xFF34D399) : Colors.grey,
-                  ),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: online
+                    ? const Color(0xFF10B981).withOpacity(0.55)
+                    : const Color(0xFF334155),
+                width: 1.4,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: (online
+                          ? const Color(0xFF10B981)
+                          : const Color(0xFF6366F1))
+                      .withOpacity(0.08),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
                 ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        cfg == null
-                            ? 'Departamento no vinculado'
-                            : 'Departamento ${cfg.exten}',
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(9),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF4F46E5).withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(Icons.apartment_rounded,
+                              color: Color(0xFF818CF8), size: 22),
                         ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              cfg == null
+                                  ? 'Departamento No Vinculado'
+                                  : 'Departamento ${cfg.exten}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            Text(
+                              cfg == null
+                                  ? 'Escanea tu QR para comenzar'
+                                  : 'Frente KD9203 (Ext. ${cfg.doorExten})',
+                              style: const TextStyle(
+                                  color: Color(0xFF94A3B8), fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    PulsingStatusBadge(
+                      isOnline: online,
+                      onlineLabel: 'EN LÍNEA',
+                      offlineLabel: cfg == null ? 'SIN CONFIG' : 'CONECTANDO',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF090D16).withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF1E293B)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        online ? Icons.verified_user_rounded : Icons.wifi_find_rounded,
+                        size: 16,
+                        color: online
+                            ? const Color(0xFF34D399)
+                            : const Color(0xFFFBBF24),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        cfg == null
-                            ? 'Escanea el código QR del Panel Web para activar tu portero'
-                            : online
-                                ? 'Conectado al VPS (${cfg.sipHost}) • Push Activo'
-                                : 'Reconectando a ${cfg.sipHost}...',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.blueGrey.shade200,
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          cfg == null
+                              ? 'Toca "Escanear QR" o ingresa tus datos en Ajustes.'
+                              : online
+                                  ? 'Video H.264 + Audio listos • Límite 5 min'
+                                  : 'Estableciendo enlace SIP seguro con ${cfg.sipHost}...',
+                          style: const TextStyle(
+                              color: Color(0xFFCBD5E1), fontSize: 12),
                         ),
                       ),
                     ],
@@ -285,210 +443,223 @@ class _IntercomHomePageState extends State<IntercomHomePage>
               ],
             ),
           ),
-          const Spacer(),
+          const SizedBox(height: 18),
 
-          // Botón principal para ver la cámara del Frente de Calle KD9203 (Ext 8000)
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4F46E5),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 20),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+          // Botón Hero Principal: Ver Cámara de Calle en Vivo
+          Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              gradient: LinearGradient(
+                colors: online
+                    ? [const Color(0xFF4F46E5), const Color(0xFF0284C7)]
+                    : [const Color(0xFF1E293B), const Color(0xFF1E293B)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: online
+                  ? [
+                      BoxShadow(
+                        color: const Color(0xFF4F46E5).withOpacity(0.35),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(22),
+                onTap: online ? _svc.monitorDoorCamera : null,
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 58,
+                        height: 58,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(online ? 0.18 : 0.06),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: Icon(
+                          Icons.videocam_rounded,
+                          color: online ? Colors.white : const Color(0xFF64748B),
+                          size: 32,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'VER CÁMARA DE CALLE',
+                              style: TextStyle(
+                                color: online
+                                    ? Colors.white
+                                    : const Color(0xFF64748B),
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              online
+                                  ? 'Video en vivo, hablar y abrir puerta (#)'
+                                  : 'Conecta tu departamento para habilitar',
+                              style: TextStyle(
+                                color: online
+                                    ? const Color(0xFFE0E7FF)
+                                    : const Color(0xFF475569),
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        color: online ? Colors.white70 : const Color(0xFF475569),
+                        size: 18,
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-            onPressed: online ? _svc.monitorDoorCamera : null,
-            icon: const Icon(Icons.visibility_rounded, size: 28),
-            label: const Text(
-              'VER CÁMARA DE CALLE (8000)',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 18),
 
-          OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: const BorderSide(color: Color(0xFF475569)),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-            ),
-            onPressed: _scanQrCode,
-            icon: const Icon(Icons.qr_code_2_rounded),
-            label: Text(
-              cfg == null
-                  ? 'ESCANEAR QR DEL DEPARTAMENTO'
-                  : 'CAMBIAR DEPARTAMENTO (ESCANEAR QR)',
+          const Text(
+            'ACCESOS RÁPIDOS',
+            style: TextStyle(
+              color: Color(0xFF64748B),
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.2,
             ),
           ),
-          const Spacer(),
+          const SizedBox(height: 10),
+
+          // Grilla de 4 tarjetas rápidas con íconos profesionales
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.28,
+            children: [
+              _QuickTile(
+                icon: Icons.key_rounded,
+                color: const Color(0xFF10B981),
+                title: 'Abrir Puerta',
+                subtitle: 'Ir a cámara + destrabar',
+                onTap: () {
+                  if (online) {
+                    _svc.monitorDoorCamera();
+                  } else {
+                    _scanQrCode();
+                  }
+                },
+              ),
+              _QuickTile(
+                icon: Icons.qr_code_2_rounded,
+                color: const Color(0xFF38BDF8),
+                title: 'Vincular QR',
+                subtitle: cfg == null ? 'Configurar depto' : 'Cambiar interno',
+                onTap: _scanQrCode,
+              ),
+              _QuickTile(
+                icon: Icons.face_retouching_natural_rounded,
+                color: const Color(0xFFA78BFA),
+                title: 'Acceso Facial',
+                subtitle: 'Biometría KD9203 lista',
+                onTap: () => setState(() => _selectedTab = 2),
+              ),
+              _QuickTile(
+                icon: Icons.history_rounded,
+                color: const Color(0xFFF59E0B),
+                title: 'Actividad',
+                subtitle: '${_svc.history.length} eventos guardados',
+                onTap: () => setState(() => _selectedTab = 1),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildActiveCallView() {
-    final isIncomingRinging = _svc.callState == CallStateEnum.PROGRESS &&
-        _svc.activeCall?.direction == 'INCOMING';
+class _QuickTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
 
-    return Column(
-      children: [
-        // Visor de Video H.264 del Frente de Calle KD9203
-        Expanded(
-          child: Container(
-            margin: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFF334155), width: 2),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                RTCVideoView(
-                  _svc.remoteRenderer,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                ),
-                Positioned(
-                  top: 14,
-                  left: 14,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.fiber_manual_record,
-                            color: Colors.redAccent, size: 14),
-                        SizedBox(width: 6),
-                        Text(
-                          'Frente KD9203 (H.264 EN VIVO)',
-                          style: TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w600),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (_svc.isDoorUnlockedFeedback)
-                  Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 24, vertical: 16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xDD059669),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.lock_open_rounded,
-                              color: Colors.white, size: 32),
-                          SizedBox(width: 12),
-                          Text(
-                            '¡PUERTA ABIERTA (#)!',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
+  const _QuickTile({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
-        // Controles de Llamada y Botón Gigante de Apertura DTMF (#)
-        Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-          decoration: const BoxDecoration(
-            color: Color(0xFF1E293B),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFF111827),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFF1E293B)),
           ),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Botón Principal: ABRIR PUERTA (Envía DTMF '#')
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  onPressed: _svc.unlockDoor,
-                  icon: const Icon(Icons.lock_open_rounded, size: 28),
-                  label: Text(
-                    'ABRIR PUERTA (ENVIAR ${_svc.config?.dtmfUnlock ?? "#"})',
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.bold),
-                  ),
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(12),
                 ),
+                child: Icon(icon, color: color, size: 22),
               ),
-              const SizedBox(height: 16),
-
-              // Fila de botones: Atender (si está sonando), Silenciar Mic, Altavoz, Cortar
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (isIncomingRinging)
-                    FloatingActionButton.extended(
-                      heroTag: 'btn_answer',
-                      backgroundColor: const Color(0xFF059669),
-                      onPressed: _svc.answerIncomingCall,
-                      icon: const Icon(Icons.call),
-                      label: const Text('Atender'),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
                     ),
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                      backgroundColor: _svc.isMicMuted
-                          ? Colors.amber.shade700
-                          : const Color(0xFF334155),
-                      padding: const EdgeInsets.all(16),
-                    ),
-                    onPressed: _svc.toggleMute,
-                    icon: Icon(_svc.isMicMuted ? Icons.mic_off : Icons.mic),
                   ),
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                      backgroundColor: _svc.isSpeakerOn
-                          ? const Color(0xFF4F46E5)
-                          : const Color(0xFF334155),
-                      padding: const EdgeInsets.all(16),
-                    ),
-                    onPressed: _svc.toggleSpeaker,
-                    icon: Icon(
-                        _svc.isSpeakerOn ? Icons.volume_up : Icons.volume_down),
-                  ),
-                  FloatingActionButton.extended(
-                    heroTag: 'btn_hangup',
-                    backgroundColor: Colors.redAccent,
-                    onPressed: _svc.hangup,
-                    icon: const Icon(Icons.call_end),
-                    label: const Text('Cortar'),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xFF94A3B8), fontSize: 11),
                   ),
                 ],
               ),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 }
-

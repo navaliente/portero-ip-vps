@@ -1,54 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sip_ua/sip_ua.dart';
 
-class ApartmentConfig {
-  final String exten;
-  final String password;
-  final String sipHost;
-  final String wsUrl;
-  final String doorExten;
-  final String dtmfUnlock;
-  final String pushRegisterUrl;
-
-  const ApartmentConfig({
-    required this.exten,
-    required this.password,
-    required this.sipHost,
-    required this.wsUrl,
-    this.doorExten = '8000',
-    this.dtmfUnlock = '#',
-    required this.pushRegisterUrl,
-  });
-
-  factory ApartmentConfig.fromJson(Map<String, dynamic> json) {
-    final host = json['sip_host']?.toString() ?? '';
-    return ApartmentConfig(
-      exten: json['exten']?.toString() ?? '',
-      password: json['password']?.toString() ?? '',
-      sipHost: host,
-      wsUrl: json['ws_url']?.toString() ?? 'ws://$host:8080/ws',
-      doorExten: json['door_exten']?.toString() ?? '8000',
-      dtmfUnlock: json['dtmf_unlock']?.toString() ?? '#',
-      pushRegisterUrl:
-          json['push_register_url']?.toString() ?? 'http://$host:8088/api/register-push',
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-        'exten': exten,
-        'password': password,
-        'sip_host': sipHost,
-        'ws_url': wsUrl,
-        'door_exten': doorExten,
-        'dtmf_unlock': dtmfUnlock,
-        'push_register_url': pushRegisterUrl,
-      };
-}
+import '../models/intercom_models.dart';
 
 class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   final SIPUAHelper _helper = SIPUAHelper();
@@ -56,11 +17,23 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
 
   ApartmentConfig? config;
   RegistrationStateEnum registrationState = RegistrationStateEnum.NONE;
+  TransportStateEnum transportState = TransportStateEnum.NONE;
   Call? activeCall;
   CallStateEnum callState = CallStateEnum.NONE;
+
   bool isDoorUnlockedFeedback = false;
   bool isSpeakerOn = true;
   bool isMicMuted = false;
+  String? lastUnlockedCode;
+  String? lastErrorMessage;
+  String? fcmTokenCache;
+
+  List<AccessEvent> history = [];
+  int callDurationSeconds = 0;
+  Timer? _callTimer;
+  Timer? _reconnectTimer;
+  bool _currentCallWasAnswered = false;
+  bool _currentCallIsOutgoing = false;
 
   bool get isRegistered =>
       registrationState == RegistrationStateEnum.REGISTERED;
@@ -70,10 +43,68 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
       callState != CallStateEnum.ENDED &&
       callState != CallStateEnum.FAILED;
 
+  bool get isIncomingRinging =>
+      hasActiveCall &&
+      (callState == CallStateEnum.PROGRESS ||
+          callState == CallStateEnum.CALL_INITIATION) &&
+      activeCall?.direction == 'INCOMING';
+
+  String get formattedCallDuration {
+    final m = (callDurationSeconds ~/ 60).toString().padLeft(2, '0');
+    final s = (callDurationSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
   Future<void> init() async {
     await remoteRenderer.initialize();
     _helper.addSipUaHelperListener(this);
+    await _loadHistory();
     await loadSavedConfig();
+  }
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('intercom_history');
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as List<dynamic>;
+        history = decoded
+            .map((e) => AccessEvent.fromJson(e as Map<String, dynamic>))
+            .toList();
+      } catch (_) {
+        history = [];
+      }
+    }
+  }
+
+  Future<void> _recordEvent(
+    AccessEventType type,
+    String title,
+    String subtitle,
+  ) async {
+    final evt = AccessEvent(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      type: type,
+      title: title,
+      subtitle: subtitle,
+      timestamp: DateTime.now(),
+    );
+    history = [evt, ...history].take(50).toList();
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'intercom_history',
+        jsonEncode(history.map((e) => e.toJson()).toList()),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> clearHistory() async {
+    history = [];
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('intercom_history');
   }
 
   Future<void> loadSavedConfig() async {
@@ -86,27 +117,43 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
     }
   }
 
-  /// Descarga la configuración escaneada desde el Código QR del Panel Web y registra el celular
+  /// Descarga la configuración escaneada desde el Código QR del Panel Web
   Future<void> configureFromQrUrl(String qrUrl, {String? fcmToken}) async {
-    final resp = await http.get(Uri.parse(qrUrl)).timeout(const Duration(seconds: 8));
+    final resp =
+        await http.get(Uri.parse(qrUrl)).timeout(const Duration(seconds: 8));
     if (resp.statusCode != 200) {
-      throw Exception('Error descargando configuración QR (HTTP ${resp.statusCode})');
+      throw Exception(
+          'Error descargando configuración QR (HTTP ${resp.statusCode})');
     }
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
     config = ApartmentConfig.fromJson(data);
+    await _persistAndConnect(fcmToken: fcmToken);
+  }
 
+  /// Guarda configuración manual ingresada desde Ajustes
+  Future<void> saveManualConfig(ApartmentConfig newConfig,
+      {String? fcmToken}) async {
+    config = newConfig;
+    await _persistAndConnect(fcmToken: fcmToken ?? fcmTokenCache);
+  }
+
+  Future<void> _persistAndConnect({String? fcmToken}) async {
+    if (config == null) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('apartment_config', jsonEncode(config!.toJson()));
+    lastErrorMessage = null;
     notifyListeners();
 
     connectSip();
-    if (fcmToken != null && fcmToken.isNotEmpty) {
-      await registerPushTokenOnVps(fcmToken);
+    final tokenToUse = fcmToken ?? fcmTokenCache;
+    if (tokenToUse != null && tokenToUse.isNotEmpty) {
+      await registerPushTokenOnVps(tokenToUse);
     }
   }
 
   /// Registra el token FCM/APNs en el VPS (/etc/asterisk/push_devices.json)
   Future<void> registerPushTokenOnVps(String fcmToken) async {
+    fcmTokenCache = fcmToken;
     if (config == null || fcmToken.isEmpty) return;
     try {
       await http
@@ -127,6 +174,8 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   void connectSip() {
     final cfg = config;
     if (cfg == null) return;
+    _reconnectTimer?.cancel();
+    lastErrorMessage = null;
 
     final settings = UaSettings()
       ..webSocketUrl = cfg.wsUrl
@@ -135,18 +184,34 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
       ..authorizationUser = cfg.exten
       ..password = cfg.password
       ..displayName = 'Depto ${cfg.exten}'
-      ..userAgent = 'PorteroIP-App/1.0'
+      ..userAgent = 'PorteroIP-Pro/1.1'
       ..dtmfMode = DtmfMode.RFC2833
       ..iceServers = [
         {'urls': 'stun:stun.l.google.com:19302'},
       ];
 
-    _helper.start(settings);
+    try {
+      _helper.start(settings);
+    } catch (e) {
+      lastErrorMessage = e.toString();
+      notifyListeners();
+    }
   }
 
-  /// Llama al frente de calle KD9203 (Extensión 8000) para monitorear la cámara en vivo
+  /// Llama al frente de calle KD9203 (Extensión 8000) para monitorear cámara en vivo
   Future<void> monitorDoorCamera() async {
     if (config == null) return;
+    _currentCallIsOutgoing = true;
+    _currentCallWasAnswered = false;
+    isMicMuted = false;
+    isSpeakerOn = true;
+
+    await _recordEvent(
+      AccessEventType.cameraMonitor,
+      'Monitoreo de cámara iniciado',
+      'Frente de calle KD9203 (Ext. ${config!.doorExten})',
+    );
+
     final mediaConstraints = <String, dynamic>{
       'audio': true,
       'video': {
@@ -169,6 +234,9 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   /// Atiende la llamada entrante del portero KD9203 con audio y video H.264
   Future<void> answerIncomingCall() async {
     if (activeCall == null) return;
+    _currentCallWasAnswered = true;
+    HapticFeedback.mediumImpact();
+
     final mediaConstraints = <String, dynamic>{
       'audio': true,
       'video': true,
@@ -179,15 +247,26 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
       mediaStream: stream,
     );
     await Helper.setSpeakerphoneOn(true);
+    isSpeakerOn = true;
+    notifyListeners();
   }
 
-  /// Envía el pulso DTMF '#' (RFC2833/4733 + SIP INFO) para accionar el relé de cerradura del KD9203
-  Future<void> unlockDoor() async {
+  /// Envía el pulso DTMF '#' (o código secundario) para accionar el relé del KD9203
+  Future<void> unlockDoor({String? customCode}) async {
     if (activeCall == null || config == null) return;
-    final code = config!.dtmfUnlock;
+    final code = customCode ?? config!.dtmfUnlock;
+    HapticFeedback.heavyImpact();
     activeCall!.sendDTMF(code);
+
+    lastUnlockedCode = code;
     isDoorUnlockedFeedback = true;
     notifyListeners();
+
+    await _recordEvent(
+      AccessEventType.doorUnlocked,
+      'Puerta Principal Destrabada ($code)',
+      'Apertura remota enviada al frente KD9203',
+    );
 
     Future.delayed(const Duration(seconds: 3), () {
       isDoorUnlockedFeedback = false;
@@ -197,6 +276,7 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
 
   void toggleMute() {
     if (activeCall == null) return;
+    HapticFeedback.selectionClick();
     isMicMuted = !isMicMuted;
     if (isMicMuted) {
       activeCall!.mute(true, false);
@@ -207,13 +287,29 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   }
 
   Future<void> toggleSpeaker() async {
+    HapticFeedback.selectionClick();
     isSpeakerOn = !isSpeakerOn;
     await Helper.setSpeakerphoneOn(isSpeakerOn);
     notifyListeners();
   }
 
   void hangup() {
+    HapticFeedback.lightImpact();
     activeCall?.hangup();
+  }
+
+  void _startCallTimer() {
+    _callTimer?.cancel();
+    callDurationSeconds = 0;
+    _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      callDurationSeconds++;
+      notifyListeners();
+    });
+  }
+
+  void _stopCallTimer() {
+    _callTimer?.cancel();
+    _callTimer = null;
   }
 
   // === Eventos de SIPUAHelper ===
@@ -221,6 +317,11 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   @override
   void registrationStateChanged(RegistrationState state) {
     registrationState = state.state ?? RegistrationStateEnum.NONE;
+    if (registrationState == RegistrationStateEnum.REGISTRATION_FAILED) {
+      lastErrorMessage = 'Fallo de autenticación SIP (${state.cause ?? "ver clave"})';
+    } else if (registrationState == RegistrationStateEnum.REGISTERED) {
+      lastErrorMessage = null;
+    }
     notifyListeners();
   }
 
@@ -229,13 +330,36 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
     activeCall = call;
     callState = state.state;
 
-    if (state.state == CallStateEnum.STREAM && state.stream != null) {
+    if (state.state == CallStateEnum.PROGRESS && call.direction == 'INCOMING') {
+      _currentCallIsOutgoing = false;
+      _currentCallWasAnswered = false;
+      HapticFeedback.vibrate();
+    } else if (state.state == CallStateEnum.CONFIRMED) {
+      _currentCallWasAnswered = true;
+      _startCallTimer();
+      if (!_currentCallIsOutgoing) {
+        _recordEvent(
+          AccessEventType.ringAnswered,
+          'Timbre atendido (Depto ${config?.exten ?? ""})',
+          'Comunicación H.264 establecida',
+        );
+      }
+    } else if (state.state == CallStateEnum.STREAM && state.stream != null) {
       if (state.originator == 'remote') {
         remoteRenderer.srcObject = state.stream;
         Helper.setSpeakerphoneOn(true);
       }
     } else if (state.state == CallStateEnum.ENDED ||
         state.state == CallStateEnum.FAILED) {
+      if (!_currentCallIsOutgoing && !_currentCallWasAnswered) {
+        _recordEvent(
+          AccessEventType.ringMissed,
+          'Timbre perdido',
+          'Llamada entrante del frente de calle no atendida',
+        );
+      }
+      _stopCallTimer();
+      callDurationSeconds = 0;
       remoteRenderer.srcObject = null;
       activeCall = null;
     }
@@ -243,21 +367,26 @@ class IntercomService extends ChangeNotifier implements SipUaHelperListener {
   }
 
   @override
-  void transportStateChanged(TransportState state) {}
+  void transportStateChanged(TransportState state) {
+    transportState = state.state;
+    if (state.state == TransportStateEnum.DISCONNECTED && config != null) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = Timer(const Duration(seconds: 5), () {
+        if (!isRegistered) connectSip();
+      });
+    }
+    notifyListeners();
+  }
 
   @override
   void onNewMessage(SIPMessageRequest msg) {}
 
   @override
-  void onNewNotify(Notify ntf) {}
-
-  @override
-  void onNewReinvite(ReInvite event) {}
-
-  @override
   void dispose() {
+    _callTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _helper.removeSipUaHelperListener(this);
     remoteRenderer.dispose();
     super.dispose();
   }
 }
-

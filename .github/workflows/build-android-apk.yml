@@ -31,12 +31,13 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Generar estructura nativa Android e inyectar permisos de Videoportero
+      - name: Generar estructura nativa Android, íconos y permisos de Videoportero
         working-directory: app-movil
         run: |
           flutter create . --project-name portero_ip_app --org com.navaliente.porteroip --platforms android
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.CAMERA"\/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"\/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true"/' "$MANIFEST"
+          sed -i 's/android:label="portero_ip_app"/android:label="Portero IP"/g' "$MANIFEST"
           if [ -f "android/app/build.gradle.kts" ]; then
             sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
           fi
@@ -44,6 +45,11 @@ jobs:
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
           fi
           flutter pub get
+          dart run flutter_launcher_icons
+
+      - name: Analizar código Dart
+        working-directory: app-movil
+        run: flutter analyze --no-fatal-infos || true
 
       - name: Compilar APK Release
         working-directory: app-movil
@@ -62,9 +68,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
-          name: "App Móvil Videoportero IP (Android APK)"
-          body: "Descarga directa del instalador Android (`portero-ip-edificio.apk`) para los vecinos del edificio."
+          name: "App Móvil Videoportero IP v1.1 (Android APK)"
+          body: "Versión v1.1 con gráficos renovados, ícono personalizado, temporizador de llamada 5 min, teclado DTMF, historial de eventos y guía biométrica."
           files: app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
