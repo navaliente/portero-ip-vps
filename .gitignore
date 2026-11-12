@@ -17,3 +17,9 @@ app-movil/.flutter-plugins*
 app-movil/android/.gradle/
 app-movil/ios/Pods/
 
+# Node / Binary artifacts locales
+node_modules/
+*.apk
+package.json
+package-lock.json
+
