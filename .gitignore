@@ -25,6 +25,7 @@ app-movil/ios/Pods/
 # Node / Binary artifacts locales
 node_modules/
 *.apk
+*.aab
 package.json
 package-lock.json
 
