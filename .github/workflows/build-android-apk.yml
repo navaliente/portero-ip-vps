@@ -1,4 +1,4 @@
-name: Compilar APK Android (App Portero IP)
+name: Compilar Play Store AAB y APK (PorteroCloud)
 
 on:
   workflow_dispatch:
@@ -9,8 +9,8 @@ on:
       - '.github/workflows/build-android-apk.yml'
 
 jobs:
-  build-apk:
-    name: Compilar APK Flutter (Android Release)
+  build-play-store:
+    name: Compilar AAB (Play Store) y APK Firmado
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -31,19 +31,27 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Generar estructura nativa Android, íconos y permisos de Videoportero
+      - name: Generar proyecto Android, permisos, íconos y firma Play Store
         working-directory: app-movil
+        env:
+          PLAY_KEYSTORE_BASE64: ${{ secrets.PLAY_KEYSTORE_BASE64 }}
+          PLAY_KEYSTORE_PASSWORD: ${{ secrets.PLAY_KEYSTORE_PASSWORD }}
+          PLAY_KEY_ALIAS: ${{ secrets.PLAY_KEY_ALIAS }}
+          PLAY_KEY_PASSWORD: ${{ secrets.PLAY_KEY_PASSWORD }}
         run: |
           flutter create . --project-name portero_ip_app --org com.navaliente.porteroip --platforms android
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.CAMERA"\/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"\/>\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <application android:usesCleartextTraffic="true"/' "$MANIFEST"
-          sed -i 's/android:label="portero_ip_app"/android:label="Portero IP"/g' "$MANIFEST"
-          if [ -f "android/app/build.gradle.kts" ]; then
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
+          sed -i 's/android:label="portero_ip_app"/android:label="PorteroCloud"/g' "$MANIFEST"
+
+          if [ -n "$PLAY_KEYSTORE_BASE64" ]; then
+            echo "$PLAY_KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            keytool -list -keystore android/app/upload-keystore.jks -storepass "$PLAY_KEYSTORE_PASSWORD" -alias "$PLAY_KEY_ALIAS"
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=upload-keystore.jks\n" \
+              "$PLAY_KEYSTORE_PASSWORD" "$PLAY_KEY_PASSWORD" "$PLAY_KEY_ALIAS" > android/key.properties
           fi
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
-          fi
+
+          python3 tool/configure_play_gradle.py
           flutter pub get
           dart run flutter_launcher_icons
 
@@ -51,25 +59,36 @@ jobs:
         working-directory: app-movil
         run: flutter analyze --no-fatal-infos || true
 
-      - name: Compilar APK Release
+      - name: Compilar Android App Bundle (.aab) para Google Play Store
+        working-directory: app-movil
+        run: |
+          flutter build appbundle --release --no-tree-shake-icons
+          cp build/app/outputs/bundle/release/app-release.aab build/app/outputs/bundle/release/porterocloud-playstore.aab
+          jarsigner -verify -verbose -certs build/app/outputs/bundle/release/porterocloud-playstore.aab | tail -n 15
+
+      - name: Compilar APK Release firmado
         working-directory: app-movil
         run: |
           flutter build apk --release --no-tree-shake-icons
           cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/portero-ip-edificio.apk
 
-      - name: Publicar APK como Artefacto Descargable en GitHub
+      - name: Publicar AAB y APK como Artefactos en GitHub Actions
         uses: actions/upload-artifact@v4
         with:
-          name: Portero-IP-Edificio-APK
-          path: app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
+          name: PorteroCloud-PlayStore-Bundle
+          path: |
+            app-movil/build/app/outputs/bundle/release/porterocloud-playstore.aab
+            app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
           retention-days: 90
 
-      - name: Publicar APK en Releases para descarga directa con 1 clic
+      - name: Publicar Release en GitHub (AAB + APK)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
-          name: "App Móvil Videoportero IP v1.1 (Android APK)"
-          body: "Versión v1.1 con gráficos renovados, ícono personalizado, temporizador de llamada 5 min, teclado DTMF, historial de eventos y guía biométrica."
-          files: app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
+          name: "PorteroCloud v1.1 (Play Store AAB + Android APK)"
+          body: "Paquete `.aab` firmado listo para Google Play Console y `.apk` directo para instalación local."
+          files: |
+            app-movil/build/app/outputs/bundle/release/porterocloud-playstore.aab
+            app-movil/build/app/outputs/flutter-apk/portero-ip-edificio.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

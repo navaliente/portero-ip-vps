@@ -1,6 +1,11 @@
 # Archivos sensibles y llaves locales
 *.pem
 *.key
+*.jks
+*.p12
+*.keystore
+key.properties
+CREDENCIALES_KEYSTORE_PRIVADO.txt
 firebase-service-account.json
 credenciales_portero.txt
 push_devices.json

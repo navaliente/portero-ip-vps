@@ -36,7 +36,7 @@ Future<void> showNativeIncomingCall({
   final params = CallKitParams(
     id: callUuid,
     nameCaller: callerName,
-    appName: 'Portero IP',
+    appName: 'PorteroCloud',
     handle: callerNumber,
     type: 1,
     textAccept: 'Atender Video',
@@ -93,7 +93,7 @@ class PorteroIpApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Portero IP Edificio',
+      title: 'PorteroCloud',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true).copyWith(
         scaffoldBackgroundColor: const Color(0xFF090D16),
@@ -236,7 +236,7 @@ class _IntercomHomePageState extends State<IntercomHomePage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    cfg != null ? 'Depto ${cfg.exten}' : 'Portero IP',
+                    cfg != null ? 'Depto ${cfg.exten}' : 'PorteroCloud',
                     style: const TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w800,

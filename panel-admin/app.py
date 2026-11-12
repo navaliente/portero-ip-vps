@@ -269,6 +269,49 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
 
+        # Política de Privacidad pública requerida por Google Play Store
+        if parsed.path == "/privacidad":
+            privacy_html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Política de Privacidad • PorteroCloud</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #060911; color: #e2e8f0; max-width: 760px; margin: 40px auto; padding: 0 20px; line-height: 1.65; }
+        h1 { color: #ffffff; font-size: 26px; }
+        h2 { color: #818cf8; font-size: 17px; margin-top: 24px; }
+        .card { background: #0d1321; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 28px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Política de Privacidad — PorteroCloud</h1>
+        <p><strong>Última actualización:</strong> Noviembre 2026 · Paquete: <code>com.navaliente.porteroip</code></p>
+        <h2>1. Finalidad de la aplicación</h2>
+        <p>PorteroCloud permite a los residentes de un edificio recibir videollamadas desde el frente de calle SIP del consorcio, visualizar en vivo la entrada y accionar la apertura remota de puerta.</p>
+        <h2>2. Permisos y datos utilizados</h2>
+        <ul>
+            <li><strong>Cámara (CAMERA):</strong> Se utiliza únicamente para escanear el código QR de vinculación del departamento y habilitar la transmisión de videoportero cuando el usuario lo inicia.</li>
+            <li><strong>Micrófono (RECORD_AUDIO):</strong> Se utiliza exclusivamente durante las llamadas activas entre el residente y el frente de calle para mantener comunicación de voz bidireccional.</li>
+            <li><strong>Notificaciones y llamadas entrantes (POST_NOTIFICATIONS / USE_FULL_SCREEN_INTENT):</strong> Necesarios para despertar la pantalla y alertar cuando un visitante presiona el timbre del departamento.</li>
+            <li><strong>Almacenamiento local:</strong> La configuración del interno y el historial local de llamadas se guardan únicamente en el dispositivo del usuario.</li>
+        </ul>
+        <h2>3. Compartición y retención de datos</h2>
+        <p>PorteroCloud no vende, alquila ni comparte datos personales, grabaciones de audio ni imágenes con terceros ni con redes publicitarias. La comunicación SIP/WebRTC viaja cifrada hacia la central privada del edificio.</p>
+        <h2>4. Contacto y eliminación</h2>
+        <p>Para solicitar la baja de su interno o token de notificaciones, comuníquese con la administración de su edificio o escriba a <code>soporte@navaliente</code>.</p>
+    </div>
+</body>
+</html>"""
+            body = privacy_html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # Endpoint público (con token secreto) para que la app Linphone descargue el XML al escanear el QR
         m_prov = re.match(r"^/prov/(\d+)_([a-f0-9]{24})\.xml$", parsed.path)
         if m_prov:
