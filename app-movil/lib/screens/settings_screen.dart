@@ -404,6 +404,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          ],
           const SizedBox(height: 14),
 
           // Tarjeta: Ingresar con Código Familiar (primera descarga)
@@ -690,6 +691,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          ],
           const SizedBox(height: 14),
 
           // Guía de Batería y Segundo Plano para sonar con pantalla apagada
