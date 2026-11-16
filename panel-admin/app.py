@@ -269,6 +269,128 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
 
+        # Descarga directa del APK Android desde la propia VPS (streaming por bloques)
+        if parsed.path in ("/porterocloud.apk", "/descargar/porterocloud.apk"):
+            apk_candidates = [
+                "/opt/portero-ip/porterocloud.apk",
+                os.path.join(BASE_DIR, "porterocloud.apk"),
+                os.path.join(BASE_DIR, "portero-ip-edificio.apk"),
+            ]
+            apk_path = next((p for p in apk_candidates if os.path.isfile(p)), None)
+            if not apk_path:
+                self.send_error(404, "APK aun no cargado en la VPS")
+                return
+            file_size = os.path.getsize(apk_path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.android.package-archive")
+            self.send_header("Content-Disposition", 'attachment; filename="PorteroCloud.apk"')
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with open(apk_path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return
+
+        # Icono SVG y Manifest PWA para instalacion directa en iPhone (Safari) y Android
+        if parsed.path == "/icon.svg":
+            svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4f46e5"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient></defs>
+  <rect width="512" height="512" rx="112" fill="#060911"/>
+  <rect x="36" y="36" width="440" height="440" rx="92" fill="url(#g)" opacity="0.18"/>
+  <path d="M168 128h176a32 32 0 0 1 32 32v192a32 32 0 0 1-32 32H168a32 32 0 0 1-32-32V160a32 32 0 0 1 32-32z" fill="none" stroke="#818cf8" stroke-width="24"/>
+  <circle cx="256" cy="224" r="44" fill="#22d3ee"/>
+  <circle cx="256" cy="324" r="18" fill="#10b981"/>
+</svg>""".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(svg)))
+            self.end_headers()
+            self.wfile.write(svg)
+            return
+
+        if parsed.path == "/manifest.json":
+            manifest = json.dumps({
+                "name": "PorteroCloud",
+                "short_name": "PorteroCloud",
+                "start_url": "/instalar",
+                "display": "standalone",
+                "background_color": "#060911",
+                "theme_color": "#4f46e5",
+                "icons": [
+                    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+                ]
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+            self.send_header("Content-Length", str(len(manifest)))
+            self.end_headers()
+            self.wfile.write(manifest)
+            return
+
+        # Pagina publica de instalacion para Android (APK directo de la VPS) e iPhone (Safari PWA)
+        if parsed.path == "/instalar":
+            base_url = get_base_web_url()
+            apk_url = f"{base_url}/porterocloud.apk"
+            install_html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instalar PorteroCloud • Android & iPhone</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PorteroCloud">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#060911] text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="max-w-lg w-full space-y-5">
+        <div class="text-center space-y-2">
+            <img src="/icon.svg" alt="PorteroCloud" class="w-16 h-16 mx-auto rounded-2xl shadow-lg">
+            <h1 class="text-2xl font-extrabold text-white">Instalar PorteroCloud</h1>
+            <p class="text-xs text-slate-400">Descarga directa desde tu servidor VPS • Android & iPhone</p>
+        </div>
+
+        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Android</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">APK Directo (VPS)</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                Descarga e instala la app oficial directamente desde tu servidor sin pasar por Play Store. Si Android pide permiso, habilita <strong>"Instalar apps de esta fuente"</strong>.
+            </p>
+            <a href="{apk_url}" class="block w-full text-center py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-lg transition">
+                ⬇ Descargar PorteroCloud.apk (Android)
+            </a>
+        </div>
+
+        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-cyan-400">iPhone (iOS)</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold">App Web Safari (PWA)</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                En iPhone, abrí el enlace privado de tu departamento (QR o link que te pasa el administrador) en <strong>Safari</strong>, tocá el botón <strong>Compartir</strong> y elegí <strong>"Agregar a pantalla de inicio"</strong>.
+            </p>
+            <div class="text-[11px] text-slate-400 bg-white/[0.03] border border-white/5 rounded-xl p-3">
+                Queda instalada con ícono en tu iPhone y funciona en pantalla completa con video, audio WebRTC y apertura de puerta.
+            </div>
+        </div>
+    </div>
+</body>
+</html>""".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(install_html)))
+            self.end_headers()
+            self.wfile.write(install_html)
+            return
+
         # Política de Privacidad pública requerida por Google Play Store
         if parsed.path == "/privacidad":
             privacy_html = """<!DOCTYPE html>
@@ -381,6 +503,34 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Ruta no encontrada")
 
     def do_POST(self) -> None:
+        parsed_post = urllib.parse.urlparse(self.path)
+        if parsed_post.path == "/admin/upload-apk":
+            if not self.check_auth():
+                self.require_auth()
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            qs = urllib.parse.parse_qs(parsed_post.query)
+            append_mode = qs.get("append", ["0"])[0] == "1"
+            target_dir = "/opt/portero-ip" if os.path.isdir("/opt/portero-ip") else BASE_DIR
+            target_path = os.path.join(target_dir, "porterocloud.apk")
+            tmp_mode = "ab" if append_mode else "wb"
+            remaining = length
+            with open(target_path, tmp_mode) as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            total_size = os.path.getsize(target_path) if os.path.exists(target_path) else 0
+            resp = json.dumps({"ok": True, "path": target_path, "size": total_size}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
         length = int(self.headers.get("Content-Length", "0"))
         post_data = self.rfile.read(length).decode("utf-8")
 
@@ -875,14 +1025,18 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                             Aplicación dedicada para los vecinos con video H.264, apertura directa con botón de puerta, teclado DTMF, historial de llamadas y vinculación rápida por QR.
                         </p>
                         <div class="flex flex-wrap gap-3 pt-2">
-                            <a href="https://github.com/navaliente/portero-ip-vps/releases/download/v1.0.0/portero-ip-edificio.apk" target="_blank"
+                            <a href="/porterocloud.apk"
                                class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg transition">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                                Descargar APK (GitHub Releases)
+                                Descargar APK directo (VPS)
                             </a>
-                            <button type="button" onclick="copyText('https://github.com/navaliente/portero-ip-vps/releases/download/v1.0.0/portero-ip-edificio.apk', 'Enlace APK copiado')"
+                            <a href="/instalar" target="_blank"
+                               class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-semibold text-emerald-300 transition">
+                                Página Instalar (Android / iPhone)
+                            </a>
+                            <button type="button" onclick="copyText(window.location.origin + '/instalar', 'Enlace de instalacion copiado')"
                                     class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-xs font-semibold text-slate-200 transition">
-                                Copiar enlace de descarga
+                                Copiar enlace /instalar
                             </button>
                         </div>
                     </div>
@@ -1015,7 +1169,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             if (sec === 'mobile' && !apkQrGenerated) {
                 apkQrGenerated = true;
                 new QRCode(document.getElementById('apkQrContainer'), {
-                    text: 'https://github.com/navaliente/portero-ip-vps/releases/download/v1.0.0/portero-ip-edificio.apk',
+                    text: window.location.origin + '/instalar',
                     width: 170,
                     height: 170
                 });
@@ -1101,6 +1255,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>PorteroCloud • Depto {html.escape(exten)}</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PorteroCloud {html.escape(exten)}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
