@@ -8,6 +8,9 @@ class ApartmentConfig {
   final String pushRegisterUrl;
   final String buildingName;
   final int maxCallSeconds;
+  final String role; // 'titular' | 'familiar'
+  final String deviceId;
+  final String inviteCode;
 
   const ApartmentConfig({
     required this.exten,
@@ -19,6 +22,9 @@ class ApartmentConfig {
     required this.pushRegisterUrl,
     this.buildingName = 'Edificio Smart • KD9203',
     this.maxCallSeconds = 300,
+    this.role = 'titular',
+    this.deviceId = '',
+    this.inviteCode = '',
   });
 
   factory ApartmentConfig.fromJson(Map<String, dynamic> json) {
@@ -39,6 +45,9 @@ class ApartmentConfig {
           json['building_name']?.toString() ?? 'Edificio Smart • KD9203',
       maxCallSeconds:
           int.tryParse(json['max_call_seconds']?.toString() ?? '') ?? 300,
+      role: json['role']?.toString() ?? 'titular',
+      deviceId: json['device_id']?.toString() ?? '',
+      inviteCode: json['invite_code']?.toString() ?? '',
     );
   }
 
@@ -52,6 +61,9 @@ class ApartmentConfig {
         'push_register_url': pushRegisterUrl,
         'building_name': buildingName,
         'max_call_seconds': maxCallSeconds,
+        'role': role,
+        'device_id': deviceId,
+        'invite_code': inviteCode,
       };
 }
 

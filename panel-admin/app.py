@@ -74,6 +74,36 @@ PUSH_DEVICES_FILE = (
     if os.path.exists("/etc/asterisk")
     else os.path.join(BASE_DIR, "asterisk", "push_devices.json")
 )
+FAMILY_FILE = (
+    "/etc/asterisk/family_members.json"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "family_members.json")
+)
+MAX_FAMILY_MEMBERS = 5
+
+
+def load_family_data() -> dict:
+    if not os.path.exists(FAMILY_FILE):
+        return {}
+    try:
+        with open(FAMILY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_family_data(data: dict) -> None:
+    os.makedirs(os.path.dirname(FAMILY_FILE), exist_ok=True)
+    with open(FAMILY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _valid_sip_creds(exten: str, password: str) -> bool:
+    return any(
+        item["exten"] == exten and secrets.compare_digest(item["password"], password)
+        for item in parse_extensions()
+    )
 TEMPLATE_XML = os.path.join(
     BASE_DIR,
     "push",
@@ -615,6 +645,141 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            except Exception as e:
+                self.send_error(400, f"Solicitud invalida: {e}")
+            return
+
+        # Endpoints de Titular + Familiares (máximo 5 miembros por departamento)
+        if self.path.startswith("/api/family/"):
+            try:
+                data = json.loads(post_data) if post_data else {}
+                fam_db = load_family_data()
+
+                def send_json(code: int, obj: dict) -> None:
+                    b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                    self.send_response(code)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(b)))
+                    self.end_headers()
+                    self.wfile.write(b)
+
+                if self.path == "/api/family/join":
+                    invite_code = str(data.get("invite_code", "")).strip().upper()
+                    device_id = str(data.get("device_id", "")).strip()
+                    if not invite_code:
+                        send_json(400, {"ok": False, "error": "Código de invitación requerido"})
+                        return
+                    for unit_exten, unit_info in fam_db.items():
+                        members = unit_info.get("members", [])
+                        for m in members:
+                            if m.get("code", "").upper() == invite_code and m.get("active", True):
+                                ext_row = next((i for i in parse_extensions() if i["exten"] == unit_exten), None)
+                                if not ext_row:
+                                    continue
+                                if device_id:
+                                    m["device_id"] = device_id
+                                    save_family_data(fam_db)
+                                pub_ip = get_public_ip()
+                                base_url = get_base_web_url()
+                                domain = os.environ.get("VPS_DOMAIN", "vps-6615824-x.dattaweb.com")
+                                send_json(200, {
+                                    "ok": True,
+                                    "role": "familiar",
+                                    "member_name": m.get("name", "Familiar"),
+                                    "invite_code": m.get("code"),
+                                    "config": {
+                                        "exten": unit_exten,
+                                        "password": ext_row["password"],
+                                        "sip_host": pub_ip,
+                                        "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
+                                        "door_exten": "8000",
+                                        "dtmf_unlock": "#",
+                                        "push_register_url": f"{base_url}/api/register-push",
+                                    }
+                                })
+                                return
+                    send_json(403, {"ok": False, "error": "Código inválido o permiso revocado por el Titular"})
+                    return
+
+                exten = str(data.get("exten", "")).strip()
+                password = str(data.get("password", "")).strip()
+                device_id = str(data.get("device_id", "")).strip()
+                if not exten or not password or not _valid_sip_creds(exten, password):
+                    send_json(403, {"ok": False, "error": "Credenciales inválidas"})
+                    return
+
+                unit = fam_db.setdefault(exten, {"owner_id": "", "members": []})
+                if self.path == "/api/family/register-owner":
+                    if not unit.get("owner_id") and device_id:
+                        unit["owner_id"] = device_id
+                        save_family_data(fam_db)
+                    is_owner = bool(device_id and unit.get("owner_id") == device_id)
+                    send_json(200, {
+                        "ok": True,
+                        "role": "titular" if is_owner else "familiar",
+                        "owner_assigned": bool(unit.get("owner_id")),
+                        "max_members": MAX_FAMILY_MEMBERS,
+                        "members": unit.get("members", []) if is_owner else [],
+                    })
+                    return
+
+                if self.path == "/api/family/status":
+                    invite_code = str(data.get("invite_code", "")).strip().upper()
+                    if invite_code:
+                        found = next((m for m in unit.get("members", []) if m.get("code", "").upper() == invite_code and m.get("active", True)), None)
+                        if not found:
+                            send_json(200, {"ok": True, "role": "familiar", "revoked": True, "max_members": MAX_FAMILY_MEMBERS, "members": []})
+                            return
+                        send_json(200, {"ok": True, "role": "familiar", "revoked": False, "max_members": MAX_FAMILY_MEMBERS, "members": []})
+                        return
+                    is_owner = not unit.get("owner_id") or (device_id and unit.get("owner_id") == device_id)
+                    if not unit.get("owner_id") and device_id:
+                        unit["owner_id"] = device_id
+                        save_family_data(fam_db)
+                    send_json(200, {
+                        "ok": True,
+                        "role": "titular" if is_owner else "familiar",
+                        "revoked": False,
+                        "max_members": MAX_FAMILY_MEMBERS,
+                        "members": unit.get("members", []) if is_owner else [],
+                    })
+                    return
+
+                # Acciones exclusivas del Titular: add / revoke
+                if unit.get("owner_id") and device_id != unit.get("owner_id"):
+                    send_json(403, {"ok": False, "error": "Solo el Titular del departamento puede modificar permisos"})
+                    return
+                if not unit.get("owner_id") and device_id:
+                    unit["owner_id"] = device_id
+
+                if self.path == "/api/family/add":
+                    name = str(data.get("name", "")).strip() or "Familiar"
+                    members = unit.setdefault("members", [])
+                    if len(members) >= MAX_FAMILY_MEMBERS:
+                        send_json(400, {"ok": False, "error": f"Límite alcanzado: máximo {MAX_FAMILY_MEMBERS} familiares por departamento"})
+                        return
+                    code = f"FAM-{exten}-{secrets.randbelow(9000) + 1000}"
+                    new_member = {
+                        "id": f"m-{secrets.token_hex(4)}",
+                        "name": name[:40],
+                        "code": code,
+                        "device_id": "",
+                        "active": True,
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    }
+                    members.append(new_member)
+                    save_family_data(fam_db)
+                    send_json(200, {"ok": True, "member": new_member, "members": members, "max_members": MAX_FAMILY_MEMBERS})
+                    return
+
+                if self.path == "/api/family/revoke":
+                    member_id = str(data.get("member_id", "")).strip()
+                    unit["members"] = [m for m in unit.get("members", []) if m.get("id") != member_id]
+                    save_family_data(fam_db)
+                    send_json(200, {"ok": True, "members": unit["members"], "max_members": MAX_FAMILY_MEMBERS})
+                    return
+
+                send_json(404, {"ok": False, "error": "Ruta de familia no encontrada"})
             except Exception as e:
                 self.send_error(400, f"Solicitud invalida: {e}")
             return

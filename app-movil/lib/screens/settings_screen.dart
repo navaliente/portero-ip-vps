@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 import '../models/intercom_models.dart';
 import '../services/intercom_service.dart';
@@ -28,13 +32,180 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _hostCtrl;
   late TextEditingController _wsCtrl;
   late TextEditingController _dtmfCtrl;
+  final TextEditingController _inviteCodeCtrl = TextEditingController();
+  final TextEditingController _memberNameCtrl = TextEditingController();
   bool _showPass = false;
   bool _showManualForm = false;
+  int _techTapCount = 0;
+  bool _showTechSection = false;
+  bool _familyLoading = false;
+  String _familyRole = 'titular';
+  List<Map<String, dynamic>> _familyMembers = [];
+  String? _familyError;
+
+  static const String _apiBase = 'https://vps-6615824-x.dattaweb.com';
 
   @override
   void initState() {
     super.initState();
     _syncControllers();
+    _familyRole = widget.svc.config?.role ?? 'titular';
+    _loadFamilyStatus();
+  }
+
+  String _getOrCreateDeviceId() {
+    final existing = widget.svc.config?.deviceId ?? '';
+    if (existing.isNotEmpty) return existing;
+    final rnd = Random.secure();
+    return 'dev-${List.generate(12, (_) => rnd.nextInt(16).toRadixString(16)).join()}';
+  }
+
+  Future<void> _loadFamilyStatus() async {
+    final cfg = widget.svc.config;
+    if (cfg == null || cfg.exten.isEmpty) return;
+    setState(() {
+      _familyLoading = true;
+      _familyError = null;
+    });
+    try {
+      final resp = await http.post(
+        Uri.parse('$_apiBase/api/family/status'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'exten': cfg.exten,
+          'password': cfg.password,
+          'device_id': _getOrCreateDeviceId(),
+          'invite_code': cfg.inviteCode,
+        }),
+      );
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        if (mounted) {
+          setState(() {
+            _familyRole = data['role']?.toString() ?? cfg.role;
+            final list = data['members'] as List<dynamic>? ?? [];
+            _familyMembers = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          });
+        }
+      }
+    } catch (_) {
+      // Offline / fallback silencioso
+    } finally {
+      if (mounted) setState(() => _familyLoading = false);
+    }
+  }
+
+  Future<void> _joinWithFamilyCode() async {
+    final code = _inviteCodeCtrl.text.trim().toUpperCase();
+    if (code.isEmpty) return;
+    setState(() {
+      _familyLoading = true;
+      _familyError = null;
+    });
+    try {
+      final devId = _getOrCreateDeviceId();
+      final resp = await http.post(
+        Uri.parse('$_apiBase/api/family/join'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'invite_code': code, 'device_id': devId}),
+      );
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && data['ok'] == true && data['config'] != null) {
+        final cfgMap = Map<String, dynamic>.from(data['config'] as Map);
+        cfgMap['role'] = 'familiar';
+        cfgMap['device_id'] = devId;
+        cfgMap['invite_code'] = data['invite_code'] ?? code;
+        final cfg = ApartmentConfig.fromJson(cfgMap);
+        await widget.svc.saveManualConfig(cfg, fcmToken: widget.fcmToken);
+        _inviteCodeCtrl.clear();
+        if (mounted) {
+          setState(() => _familyRole = 'familiar');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFF059669),
+              content: Text('¡Vinculado como Familiar al Depto ${cfg.exten}!'),
+            ),
+          );
+        }
+      } else {
+        setState(() => _familyError = data['error']?.toString() ?? 'Código inválido o revocado');
+      }
+    } catch (e) {
+      setState(() => _familyError = 'Error de conexión al validar código');
+    } finally {
+      if (mounted) setState(() => _familyLoading = false);
+    }
+  }
+
+  Future<void> _addFamilyMember() async {
+    final cfg = widget.svc.config;
+    if (cfg == null) return;
+    final name = _memberNameCtrl.text.trim();
+    if (name.isEmpty) return;
+    setState(() {
+      _familyLoading = true;
+      _familyError = null;
+    });
+    try {
+      final resp = await http.post(
+        Uri.parse('$_apiBase/api/family/add'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'exten': cfg.exten,
+          'password': cfg.password,
+          'device_id': _getOrCreateDeviceId(),
+          'name': name,
+        }),
+      );
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      if (resp.statusCode == 200 && data['ok'] == true) {
+        final list = data['members'] as List<dynamic>? ?? [];
+        _memberNameCtrl.clear();
+        if (mounted) {
+          setState(() {
+            _familyMembers = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          });
+        }
+      } else {
+        setState(() => _familyError = data['error']?.toString() ?? 'No se pudo agregar');
+      }
+    } catch (_) {
+      setState(() => _familyError = 'Sin conexión con el servidor');
+    } finally {
+      if (mounted) setState(() => _familyLoading = false);
+    }
+  }
+
+  Future<void> _revokeFamilyMember(String memberId) async {
+    final cfg = widget.svc.config;
+    if (cfg == null) return;
+    setState(() => _familyLoading = true);
+    try {
+      final resp = await http.post(
+        Uri.parse('$_apiBase/api/family/revoke'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'exten': cfg.exten,
+          'password': cfg.password,
+          'device_id': _getOrCreateDeviceId(),
+          'member_id': memberId,
+        }),
+      );
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final list = data['members'] as List<dynamic>? ?? [];
+        if (mounted) {
+          setState(() {
+            _familyMembers = list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Permiso revocado al instante')),
+          );
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _familyLoading = false);
+    }
   }
 
   void _syncControllers() {
@@ -54,6 +225,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _hostCtrl.dispose();
     _wsCtrl.dispose();
     _dtmfCtrl.dispose();
+    _inviteCodeCtrl.dispose();
+    _memberNameCtrl.dispose();
     super.dispose();
   }
 
@@ -95,14 +268,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
-            'Ajustes y Vinculación',
-            style: TextStyle(
-                color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+          GestureDetector(
+            onTap: () {
+              _techTapCount++;
+              if (_techTapCount >= 5) {
+                setState(() => _showTechSection = !_showTechSection);
+                _techTapCount = 0;
+              }
+            },
+            child: const Text(
+              'Ajustes y Familia',
+              style: TextStyle(
+                  color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            ),
           ),
           const SizedBox(height: 4),
           const Text(
-            'Conexión con servidor VPS, notificaciones y energía',
+            'Vinculación por QR o código familiar • Hasta 5 miembros por unidad',
             style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
           ),
           const SizedBox(height: 16),
@@ -157,13 +339,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                _DiagRow('Departamento', cfg?.exten ?? 'No asignado'),
-                _DiagRow('Servidor VPS', cfg?.sipHost ?? '---'),
-                _DiagRow('WebSocket SIP', cfg?.wsUrl ?? '---'),
+                _DiagRow('Departamento', cfg != null ? 'Depto ${cfg.exten}' : 'No asignado'),
+                _DiagRow(
+                  'Rol de acceso',
+                  _familyRole == 'titular' ? 'Titular del Depto' : 'Familiar Autorizado',
+                ),
                 _DiagRow('Duración Máxima', '${cfg?.maxCallSeconds ?? 300}s (5 min)'),
                 _DiagRow(
                   'Notificaciones Push',
-                  token != null ? 'Token FCM Activo' : 'Modo SIP Directo',
+                  token != null ? 'Activas' : 'Modo SIP Directo',
                 ),
                 if (svc.lastErrorMessage != null) ...[
                   const SizedBox(height: 8),
@@ -222,7 +406,189 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 14),
 
-          // Tarjeta de Configuración Manual SIP
+          // Tarjeta: Ingresar con Código Familiar (primera descarga)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF111827),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFF1E293B)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Ingresar con Código Familiar',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Si el Titular de tu departamento te compartió un código, ingrésalo aquí sin usar datos técnicos.',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _inviteCodeCtrl,
+                        textCapitalization: TextCapitalization.characters,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          hintText: 'Ej: FAM-201-4829',
+                          hintStyle: const TextStyle(color: Color(0xFF64748B)),
+                          filled: true,
+                          fillColor: const Color(0xFF090D16),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF059669),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: _familyLoading ? null : _joinWithFamilyCode,
+                      child: const Text('Activar', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+                if (_familyError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_familyError!, style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12)),
+                ],
+              ],
+            ),
+          ),
+
+          // Tarjeta: Gestión de Familia (solo visible para el Titular)
+          if (cfg != null && _familyRole == 'titular') ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111827),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFF334155)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Mi Familia (Titular)',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        '${_familyMembers.length} / 5',
+                        style: const TextStyle(
+                            color: Color(0xFF38BDF8),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Designa hasta 5 personas de tu familia para atender el portero y quita permisos cuando quieras.',
+                    style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  if (_familyMembers.length < 5)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _memberNameCtrl,
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                            decoration: InputDecoration(
+                              hintText: 'Nombre (ej: María, Lucas)',
+                              hintStyle: const TextStyle(color: Color(0xFF64748B)),
+                              filled: true,
+                              fillColor: const Color(0xFF090D16),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4F46E5),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: _familyLoading ? null : _addFamilyMember,
+                          child: const Text('+ Invitar', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  if (_familyMembers.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    ..._familyMembers.map((m) {
+                      final code = m['code']?.toString() ?? '';
+                      final name = m['name']?.toString() ?? 'Familiar';
+                      final id = m['id']?.toString() ?? '';
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF090D16),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF1E293B)),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(name, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                                  Text('Código: $code', style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontFamily: 'monospace')),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Copiar código',
+                              onPressed: () {
+                                Clipboard.setData(ClipboardData(text: code));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Código $code copiado')),
+                                );
+                              },
+                              icon: const Icon(Icons.copy_rounded, color: Colors.white70, size: 18),
+                            ),
+                            IconButton(
+                              tooltip: 'Quitar permiso',
+                              onPressed: _familyLoading ? null : () => _revokeFamilyMember(id),
+                              icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFF87171), size: 20),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ],
+              ),
+            ),
+          ],
+
+          // Tarjeta de Configuración Manual SIP (solo visible para soporte técnico tras 5 toques en el título)
+          if (_showTechSection) ...[
+          const SizedBox(height: 14),
           Container(
             decoration: BoxDecoration(
               color: const Color(0xFF111827),
