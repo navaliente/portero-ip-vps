@@ -404,7 +404,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          ],
           const SizedBox(height: 14),
 
           // Tarjeta: Ingresar con Código Familiar (primera descarga)
