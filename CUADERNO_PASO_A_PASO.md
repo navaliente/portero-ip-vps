@@ -278,4 +278,27 @@ Para que el portero y las llamadas de voz/video atraviesen el firewall perimetra
 3. **Web y Panel QR**: Protocolo **TCP**, Puertos **`80`, `443`, `8088`, `8089`**, Origen `0.0.0.0/0`.
 4. **SSH Administración**: Protocolo **TCP**, Puertos **`22` y `5514`**, Origen `0.0.0.0/0`.
 
+---
+
+## 🔒 Registro de Avances — PorteroCloud v1.1 (`valiente.tech`) • 15-16/11/2026
+
+### 1. Descarga Directa desde la VPS (Android + iPhone PWA)
+- **Página pública de instalación:** `https://vps-6615824-x.dattaweb.com/instalar`
+- **APK Android v1.1.0 directo desde la VPS (`107,444,799` bytes):** `https://vps-6615824-x.dattaweb.com/porterocloud.apk`
+  - **SHA-256 oficial verificado:** `d8c7d03f57ee78cc4e26d9eb700f9a3f5512fd898126c56be55dfbb739cab045`
+- **iPhone (iOS):** Soporte PWA en `/vecino` y `/instalar` (`manifest.json`, `icon.svg`, `apple-mobile-web-app-capable`). Se instala desde **Safari → Compartir → Agregar a pantalla de inicio**.
+- **Política de Privacidad y Descargo Legal (Play Store):** `https://vps-6615824-x.dattaweb.com/privacidad` (`HTTP 200`).
+
+### 2. Seguridad, Cero Claves en Plano y Propiedad Intelectual
+- **Limpieza de credenciales:** eliminadas todas las contraseñas en texto plano del repositorio (`git grep` = 0 coincidencias). `ADMIN_PASS` se lee exclusivamente desde la variable de entorno `PANEL_PASS` del servicio en la VPS.
+- **Cabeceras HTTP de seguridad en `panel-admin/app.py`:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin`.
+- **Propiedad Intelectual & Descargo de Responsabilidad:** `© 2026 valiente.tech — Todos los derechos reservados` incorporado en `/instalar`, `/privacidad` y dentro de la app móvil ([settings_screen.dart](app-movil/lib/screens/settings_screen.dart)).
+
+### 3. Sistema de Titular + hasta 5 Familiares (Credenciales Técnicas Ocultas)
+- **Privacidad en la app:** el usuario final **no ve** IP del servidor, URL WebSocket ni contraseña SIP *(solo accesible para soporte tocando 5 veces el título "Ajustes y Familia")*.
+- **1 Titular por departamento:** administra su unidad desde **Mi Familia (Titular)** en la app, generando códigos de invitación (`FAM-<depto>-<4digitos>`) para hasta **5 familiares** y pudiendo **revocar/quitar permisos** con 1 toque (`/api/family/register-owner`, `/api/family/status`, `/api/family/add`, `/api/family/revoke`, `/api/family/join`).
+- **Para Google Play Console:** último App Bundle firmado listo en [`porterocloud-playstore.aab`](porterocloud-playstore.aab) (`82,464,716` bytes, paquete `com.navaliente.porteroip`, build GitHub Actions `43796307286`).
+- **Comando rápido para actualizar el panel en la VPS (consola VNC):** `curl -sL tinyurl.com/2d2bnuue | bash`
+
+
 
