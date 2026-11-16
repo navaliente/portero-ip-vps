@@ -13,7 +13,7 @@ const path = require('path');
 const PORT = 8090;
 const KD_HOST = process.env.KD_HOST || '192.168.100.186';
 const KD_USER = process.env.KD_USER || 'admin';
-const KD_PASS = process.env.KD_PASS || '1234567a';
+const KD_PASS = process.env.KD_PASS || '';
 
 function md5(str) {
   return crypto.createHash('md5').update(str).digest('hex');

@@ -236,15 +236,15 @@ Como el portero trabaja contra tu central Asterisk en la VPS (por Internet), el 
 | Recurso | Dato / Dirección | Usuario | Contraseña / Detalle |
 | :--- | :--- | :--- | :--- |
 | **IP Pública Fija (IPv4)** | `138.219.41.163` | - | Host: `vps-6615824-x.dattaweb.com` |
-| **Acceso SSH al VPS** | `138.219.41.163` (Puerto `5514` o `22`) | `root` | `Coninsur25/` |
-| **CloudPanel (Gestión VPS)** | `https://vps-6615824-x.dattaweb.com:8443` | `navaliente` | `Coninsur25/` (Correo: `alfredonavaliente@gmail.com`) |
-| **Usuario Sitio CloudPanel** | `vps-6615824-x` (FTP/SSH local) | `vps-6615824-x` | `Coninsur25/` |
+| **Acceso SSH al VPS** | `138.219.41.163` (Puerto `5514` o `22`) | `root` | `<CLAVE_PRIVADA_EN_RESGUARDO>` |
+| **CloudPanel (Gestión VPS)** | `https://vps-6615824-x.dattaweb.com:8443` | `navaliente` | `<CLAVE_PRIVADA_EN_RESGUARDO>` (Correo: `alfredonavaliente@gmail.com`) |
+| **Usuario Sitio CloudPanel** | `vps-6615824-x` (FTP/SSH local) | `vps-6615824-x` | `<CLAVE_PRIVADA_EN_RESGUARDO>` |
 
 ### 2. Panel Web del Portero y App Web de Vecinos
 | Interfaz / URL | Dirección Web | Usuario | Contraseña |
 | :--- | :--- | :--- | :--- |
-| **Panel Administrador + QR (HTTPS)** | `https://vps-6615824-x.dattaweb.com/admin` | `admin` | `pavuTAre38` |
-| **Panel Administrador (Puerto directo)** | `http://138.219.41.163:8088/admin` | `admin` | `pavuTAre38` |
+| **Panel Administrador + QR (HTTPS)** | `https://vps-6615824-x.dattaweb.com/admin` | `admin` | `<CLAVE_PRIVADA_EN_RESGUARDO>` |
+| **Panel Administrador (Puerto directo)** | `http://138.219.41.163:8088/admin` | `admin` | `<CLAVE_PRIVADA_EN_RESGUARDO>` |
 | **WebApp Vecino (Depto 101)** | `https://vps-6615824-x.dattaweb.com/vecino?exten=101` | `101` | *(Se autoconfigura desde el link o QR)* |
 | **WebSocket Seguro (WSS WebRTC)** | `wss://vps-6615824-x.dattaweb.com/ws` | - | Puerto interno Asterisk: `8089` (WSS) / `8086` (WS) |
 | **Consola en Vivo Local (Cámara + Relé + Timbre)** | `http://localhost:8090` (o en Wi-Fi: `http://192.168.100.175:8090`) | - | Comando: `node "panel-admin/servidor_local_en_vivo.js"` |
@@ -255,10 +255,10 @@ Como el portero trabaja contra tu central Asterisk en la VPS (por Internet), el 
 
 | Extensión / Interno | Dispositivo / Departamento | Usuario SIP / Auth ID | Contraseña SIP | Perfil WebRTC Asociado |
 | :---: | :--- | :---: | :--- | :---: |
-| **`8000`** | **Frente de Calle Hikvision `DS-KD9203-ME6`** | `8000` | **`uJb2YSICXu3Q`** | - |
-| **`101`** | **Departamento 101** | `101` | **`dRNLgy0xrANn`** | `101-webrtc` (misma clave) |
-| **`102`** | **Departamento 102** | `102` | **`0FAPVUVOiMTY`** | `102-webrtc` (misma clave) |
-| **`201`** | **Departamento 201** | `201` | **`MCR3Yupj6T3k`** | `201-webrtc` (misma clave) |
+| **`8000`** | **Frente de Calle Hikvision `DS-KD9203-ME6`** | `8000` | **`<CLAVE_PRIVADA_EN_RESGUARDO>`** | - |
+| **`101`** | **Departamento 101** | `101` | **`<CLAVE_PRIVADA_EN_RESGUARDO>`** | `101-webrtc` (misma clave) |
+| **`102`** | **Departamento 102** | `102` | **`<CLAVE_PRIVADA_EN_RESGUARDO>`** | `102-webrtc` (misma clave) |
+| **`201`** | **Departamento 201** | `201` | **`<CLAVE_PRIVADA_EN_RESGUARDO>`** | `201-webrtc` (misma clave) |
 
 ### 4. Frente de Calle Físico (`Hikvision DS-KD9203-ME6`)
 | Parámetro | Valor Configurado |
@@ -267,8 +267,8 @@ Como el portero trabaja contra tu central Asterisk en la VPS (por Internet), el 
 | **Dirección MAC** | `a4:d5:c2:64:37:11` |
 | **IP Local actual (en tu red)** | `http://192.168.100.186` (Máscara `255.255.255.0`, Puerta de enlace `192.168.100.1`) |
 | **Usuario de Administración (Web / iVMS-4200 / SADP)** | `admin` |
-| **Contraseña de Activación del Portero** | **`1234567a`** |
-| **Configuración SIP grabada en el equipo** | Habilitado (`true`), Servidor `138.219.41.163`, Puerto `5060`, Usuario `8000`, Clave `uJb2YSICXu3Q` |
+| **Contraseña de Activación del Portero** | **`<CLAVE_PRIVADA_EN_RESGUARDO>`** |
+| **Configuración SIP grabada en el equipo** | Habilitado (`true`), Servidor `138.219.41.163`, Puerto `5060`, Usuario `8000`, Clave `<CLAVE_PRIVADA_EN_RESGUARDO>` |
 | **Departamentos precargados en el Portero (`PhoneNumberRecords` y `UserInfo`)** | **`101`** (ID `10010110101`), **`102`** (ID `10010110102`), **`201`** (ID `10010110201`) |
 
 ### 5. Reglas que deben estar abiertas en el Firewall Externo de DonWeb (`micuenta.donweb.com`)

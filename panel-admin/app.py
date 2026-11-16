@@ -24,8 +24,39 @@ from datetime import datetime
 
 PORT = int(os.environ.get("PANEL_PORT", "8088"))
 ADMIN_USER = os.environ.get("PANEL_USER", "admin")
-ADMIN_PASS = os.environ.get("PANEL_PASS", "portero2026")
+ADMIN_PASS = os.environ.get("PANEL_PASS", "")
 VPS_IP = os.environ.get("VPS_IP", "127.0.0.1")
+
+_APK_HASH_CACHE = {"path": None, "mtime": None, "sha256": None, "size": 0}
+
+
+def get_apk_info():
+    apk_candidates = [
+        "/opt/portero-ip/porterocloud.apk",
+        "/opt/portero-ip-vps/porterocloud.apk",
+        os.path.join(BASE_DIR, "porterocloud.apk"),
+        os.path.join(BASE_DIR, "portero-ip-edificio.apk"),
+    ]
+    apk_path = next((p for p in apk_candidates if os.path.isfile(p)), None)
+    if not apk_path:
+        return None
+    st = os.stat(apk_path)
+    if _APK_HASH_CACHE["path"] == apk_path and _APK_HASH_CACHE["mtime"] == st.st_mtime:
+        return _APK_HASH_CACHE
+    h = hashlib.sha256()
+    with open(apk_path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    _APK_HASH_CACHE.update({
+        "path": apk_path,
+        "mtime": st.st_mtime,
+        "sha256": h.hexdigest(),
+        "size": st.st_size,
+    })
+    return _APK_HASH_CACHE
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PJSIP_MAIN = (
@@ -247,6 +278,8 @@ def generate_provisioning_xml(exten: str, token: str) -> str | None:
 
 class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
     def check_auth(self) -> bool:
+        if not ADMIN_PASS:
+            return False
         auth_header = self.headers.get("Authorization", "")
         if not auth_header.startswith("Basic "):
             return False
@@ -258,6 +291,12 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             )
         except Exception:
             return False
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        super().end_headers()
 
     def require_auth(self) -> None:
         self.send_response(401)
@@ -335,12 +374,19 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/instalar":
             base_url = get_base_web_url()
             apk_url = f"{base_url}/porterocloud.apk"
+            apk_info = get_apk_info()
+            sha_badge = (
+                f'<div class="text-[10px] font-mono text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2.5 break-all">'
+                f'<strong>Verificado SHA-256 (sin alteraciones):</strong><br>{apk_info["sha256"]}'
+                f'</div>'
+                if apk_info else ""
+            )
             install_html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instalar PorteroCloud • Android & iPhone</title>
+    <title>Instalar PorteroCloud • valiente.tech</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="apple-touch-icon" href="/icon.svg">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -353,20 +399,21 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         <div class="text-center space-y-2">
             <img src="/icon.svg" alt="PorteroCloud" class="w-16 h-16 mx-auto rounded-2xl shadow-lg">
             <h1 class="text-2xl font-extrabold text-white">Instalar PorteroCloud</h1>
-            <p class="text-xs text-slate-400">Descarga directa desde tu servidor VPS • Android & iPhone</p>
+            <p class="text-xs text-slate-400">Descarga oficial verificada • Android & iPhone</p>
         </div>
 
         <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
             <div class="flex items-center justify-between">
                 <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Android</span>
-                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">APK Directo (VPS)</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">APK Oficial Firmado (VPS)</span>
             </div>
             <p class="text-xs text-slate-300 leading-relaxed">
-                Descarga e instala la app oficial directamente desde tu servidor sin pasar por Play Store. Si Android pide permiso, habilita <strong>"Instalar apps de esta fuente"</strong>.
+                Descarga e instala la app oficial directamente desde el servidor seguro. Si Android pide permiso, habilita <strong>"Instalar apps de esta fuente"</strong>.
             </p>
             <a href="{apk_url}" class="block w-full text-center py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-lg transition">
                 ⬇ Descargar PorteroCloud.apk (Android)
             </a>
+            {sha_badge}
         </div>
 
         <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
@@ -375,11 +422,17 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 <span class="text-[11px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold">App Web Safari (PWA)</span>
             </div>
             <p class="text-xs text-slate-300 leading-relaxed">
-                En iPhone, abrí el enlace privado de tu departamento (QR o link que te pasa el administrador) en <strong>Safari</strong>, tocá el botón <strong>Compartir</strong> y elegí <strong>"Agregar a pantalla de inicio"</strong>.
+                En iPhone, abrí el enlace privado de tu departamento en <strong>Safari</strong>, tocá el botón <strong>Compartir</strong> y elegí <strong>"Agregar a pantalla de inicio"</strong>.
             </p>
             <div class="text-[11px] text-slate-400 bg-white/[0.03] border border-white/5 rounded-xl p-3">
                 Queda instalada con ícono en tu iPhone y funciona en pantalla completa con video, audio WebRTC y apertura de puerta.
             </div>
+        </div>
+
+        <div class="bg-[#0d1321]/70 border border-white/10 rounded-2xl p-4 text-[11px] text-slate-400 space-y-1.5 leading-relaxed">
+            <p class="text-slate-200 font-semibold">© 2026 valiente.tech — Todos los derechos reservados.</p>
+            <p>Esta aplicación, su diseño y código fuente son propiedad exclusiva de <strong>valiente.tech</strong>. Prohibida su reproducción, ingeniería inversa o redistribución no autorizada.</p>
+            <p><strong>Descargo de responsabilidad:</strong> El software se entrega "tal cual", sujeto a la disponibilidad de internet, energía eléctrica y hardware del edificio. <a href="/privacidad" class="text-indigo-400 underline">Ver Política y Descargo completo</a>.</p>
         </div>
     </div>
 </body>
@@ -422,7 +475,10 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         <h2>3. Compartición y retención de datos</h2>
         <p>PorteroCloud no vende, alquila ni comparte datos personales, grabaciones de audio ni imágenes con terceros ni con redes publicitarias. La comunicación SIP/WebRTC viaja cifrada hacia la central privada del edificio.</p>
         <h2>4. Contacto y eliminación</h2>
-        <p>Para solicitar la baja de su interno o token de notificaciones, comuníquese con la administración de su edificio o escriba a <code>soporte@navaliente</code>.</p>
+        <p>Para solicitar la baja de su interno o token de notificaciones, comuníquese con la administración de su edificio o escriba a <code>soporte@valiente.tech</code>.</p>
+        <h2>5. Propiedad Intelectual y Descargo de Responsabilidad</h2>
+        <p><strong>© 2026 valiente.tech — Todos los derechos reservados.</strong> PorteroCloud, su interfaz, arquitectura y código fuente son propiedad intelectual exclusiva de <strong>valiente.tech</strong>. Queda terminantemente prohibida su copia, replicación, descompilación, ingeniería inversa o redistribución sin autorización expresa por escrito.</p>
+        <p><strong>Descargo de responsabilidad:</strong> La aplicación se suministra "tal cual" ("as is"), sin garantías de disponibilidad ininterrumpida frente a cortes de internet, fallas eléctricas, bloqueos de red local o desperfectos del hardware de terceros. <strong>valiente.tech</strong> no será responsable por daños directos, indirectos o pérdida de acceso derivados del uso o imposibilidad de uso del sistema.</p>
     </div>
 </body>
 </html>"""

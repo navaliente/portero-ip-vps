@@ -365,6 +365,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white.withOpacity(0.08)),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.verified_user_rounded,
+                        color: Color(0xFF38BDF8), size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Propiedad Intelectual & Descargo',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 8),
+                Text(
+                  '© 2026 valiente.tech — Todos los derechos reservados.\n'
+                  'Esta aplicación y su código son propiedad exclusiva de valiente.tech. '
+                  'Queda prohibida su copia, replicación, descompilación o redistribución no autorizada.\n\n'
+                  'Descargo de responsabilidad: El servicio se brinda "tal cual", sujeto a la conectividad de red, energía eléctrica y hardware del edificio. '
+                  'valiente.tech no asume responsabilidad por daños directos o indirectos derivados del uso o interrupciones del servicio.',
+                  style: TextStyle(
+                      color: Color(0xFF94A3B8), fontSize: 11.5, height: 1.45),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
