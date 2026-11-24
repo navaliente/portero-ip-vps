@@ -1952,11 +1952,16 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 
     def render_neighbor_app(self, exten: str, token: str) -> None:
         pub_ip = get_public_ip()
+        door_exten = get_door_exten_for_unit(exten)
+        unit_label = format_unit_label(exten)
         sip_pass = ""
         for item in parse_extensions():
-            if item["exten"] == exten:
+            if item["exten"] == exten and (not token or item["token"] == token):
                 sip_pass = item["password"]
                 break
+        if not sip_pass:
+            self.send_error(403, "Enlace de departamento inválido o vencido")
+            return
         page = f"""<!DOCTYPE html>
 <html lang="es" class="dark">
 <head>
@@ -2001,8 +2006,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                     </div>
                 </div>
                 <div>
-                    <div class="font-bold text-sm text-white leading-tight">Departamento {html.escape(exten)}</div>
-                    <div class="text-[11px] text-slate-400">Frente KD9203 · Ext. 8000</div>
+                    <div class="font-bold text-sm text-white leading-tight">{html.escape(unit_label)}</div>
+                    <div class="text-[11px] text-slate-400">Frente KD9203 · Ext. {door_exten}</div>
                 </div>
             </div>
             <span id="webrtcStatusBadge" class="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-mono">
@@ -2013,8 +2018,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 
         <!-- Visor de Video HD -->
         <div class="relative flex-1 bg-[#03060D] m-3 rounded-2xl overflow-hidden border border-white/[0.08] flex flex-col items-center justify-center">
-            <video id="remoteVideo" autoplay playsinline class="w-full h-full object-cover hidden"></video>
-            <audio id="remoteAudio" autoplay></audio>
+            <video id="remoteVideo" autoplay playsinline webkit-playsinline class="w-full h-full object-cover hidden"></video>
+            <audio id="remoteAudio" autoplay playsinline></audio>
             <img id="liveCameraImg" alt="Cámara KD9203" class="w-full h-full object-cover hidden" />
 
             <!-- Standby -->
@@ -2075,7 +2080,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 <button onclick="startMonitor()"
                         class="py-2.5 px-3 bg-indigo-600/90 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5 transition">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                    <span>Ver Cámara (8000)</span>
+                    <span>Ver Cámara ({door_exten})</span>
                 </button>
                 <button onclick="simulateRing()"
                         class="py-2.5 px-3 bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 text-slate-200 font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5 transition">
@@ -2110,8 +2115,10 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         let ua = null;
         let currentSession = null;
         const EXTEN = "{html.escape(exten)}";
+        const DOOR_EXTEN = "{door_exten}";
         const SIP_PASS = "{html.escape(sip_pass)}";
-        const LOCAL_API = "http://localhost:8090";
+        const IS_LOCAL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+        const LOCAL_API = IS_LOCAL ? "http://localhost:8090" : "";
 
         function playDingDongOnce() {{
             try {{
@@ -2156,11 +2163,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         }}
 
         function startCameraFeed() {{
-            const img = document.getElementById('liveCameraImg');
             document.getElementById('liveBadge').classList.remove('hidden');
-            document.getElementById('callStatusTitle').innerText = 'Monitoreando Frente KD9203 (Ext 8000)';
-            document.getElementById('callStatusSub').innerText = 'Streaming de Video H.264 + Audio bidireccional activo';
-
+            document.getElementById('callStatusTitle').innerText = 'Conectado con Frente ' + DOOR_EXTEN;
+            document.getElementById('callStatusSub').innerText = 'Audio y Video WebRTC H.264 activo';
+            if (!IS_LOCAL) return;
+            const img = document.getElementById('liveCameraImg');
             const refreshFrame = () => {{
                 const nextImg = new Image();
                 nextImg.onload = () => {{
@@ -2179,7 +2186,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             startCameraFeed();
             if (ua && (!currentSession || currentSession.isEnded())) {{
                 try {{
-                    ua.call('sip:8000@138.219.41.163', {{ mediaConstraints: {{ audio: true, video: true }} }});
+                    ua.call('sip:' + DOOR_EXTEN + '@138.219.41.163', {{
+                        mediaConstraints: {{ audio: true, video: false }},
+                        rtcOfferConstraints: {{ offerToReceiveAudio: true, offerToReceiveVideo: true }},
+                        pcConfig: {{ iceServers: [{{ urls: 'stun:stun.l.google.com:19302' }}, {{ urls: 'stun:stun1.l.google.com:19302' }}] }}
+                    }});
                 }} catch (_) {{}}
             }}
         }}
@@ -2188,24 +2199,34 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             startRingingLoop();
             startCameraFeed();
             document.getElementById('ringingBanner').classList.remove('hidden');
-            document.getElementById('callStatusTitle').innerText = 'Timbre desde Frente KD9203';
-            document.getElementById('callStatusSub').innerText = 'Visita en puerta principal -> Presiona Abrir Puerta (#)';
+            document.getElementById('callStatusTitle').innerText = 'Timbre desde Frente ' + DOOR_EXTEN;
+            document.getElementById('callStatusSub').innerText = 'Visita en puerta -> Presiona Atender o Abrir Puerta (#)';
         }}
 
         async function answerCall() {{
             stopRingingLoop();
             document.getElementById('ringingBanner').classList.add('hidden');
             startCameraFeed();
+            try {{ document.getElementById('remoteVideo').play().catch(() => {{}}); }} catch (_) {{}}
+            try {{ document.getElementById('remoteAudio').play().catch(() => {{}}); }} catch (_) {{}}
             if (currentSession && currentSession.isInProgress()) {{
-                try {{ currentSession.answer({{ mediaConstraints: {{ audio: true, video: true }} }}); }} catch (_) {{}}
+                try {{
+                    currentSession.answer({{
+                        mediaConstraints: {{ audio: true, video: false }},
+                        rtcAnswerConstraints: {{ offerToReceiveAudio: true, offerToReceiveVideo: true }},
+                        pcConfig: {{ iceServers: [{{ urls: 'stun:stun.l.google.com:19302' }}, {{ urls: 'stun:stun1.l.google.com:19302' }}] }}
+                    }});
+                }} catch (_) {{}}
             }}
-            try {{
-                await fetch(LOCAL_API + '/api/callsignal', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ cmdType: 'answer' }})
-                }});
-            }} catch (_) {{}}
+            if (IS_LOCAL) {{
+                try {{
+                    await fetch(LOCAL_API + '/api/callsignal', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ cmdType: 'answer' }})
+                    }});
+                }} catch (_) {{}}
+            }}
         }}
 
         async function sendDtmfUnlock() {{
@@ -2216,16 +2237,24 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             const banner = document.getElementById('doorOpenedBanner');
             const sub = document.getElementById('doorOpenedSub');
             banner.classList.remove('hidden');
-            try {{
-                const res = await fetch(LOCAL_API + '/api/unlock', {{ method: 'POST' }});
-                const data = await res.json();
-                if (data.ok) sub.innerText = '¡Relé Físico #1 del KD9203 activado en vivo!';
-            }} catch (_) {{}}
+            if (IS_LOCAL) {{
+                try {{
+                    const res = await fetch(LOCAL_API + '/api/unlock', {{ method: 'POST' }});
+                    const data = await res.json();
+                    if (data.ok) sub.innerText = '¡Relé Físico #1 del KD9203 activado en vivo!';
+                }} catch (_) {{}}
+            }}
             setTimeout(() => banner.classList.add('hidden'), 3500);
         }}
 
         function toggleMute() {{
             micOn = !micOn;
+            if (currentSession) {{
+                try {{
+                    if (micOn) currentSession.unmute({{ audio: true }});
+                    else currentSession.mute({{ audio: true }});
+                }} catch (_) {{}}
+            }}
             document.getElementById('muteBtn').innerText = micOn ? 'Mic: Activo' : 'Mic: Silencio';
         }}
 
@@ -2238,21 +2267,24 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             document.getElementById('liveBadge').classList.add('hidden');
             document.getElementById('ringingBanner').classList.add('hidden');
             document.getElementById('callStatusTitle').innerText = 'En Espera de Timbre';
-            document.getElementById('callStatusSub').innerText = 'Extensión ' + EXTEN + '-webrtc lista • Notificaciones Push Activas';
+            document.getElementById('callStatusSub').innerText = 'Extensión ' + EXTEN + '-webrtc lista • WebRTC Activo';
             if (currentSession) {{
                 try {{ currentSession.terminate(); }} catch (_) {{}}
                 currentSession = null;
             }}
-            try {{
-                await fetch(LOCAL_API + '/api/callsignal', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ cmdType: 'hangUp' }})
-                }});
-            }} catch (_) {{}}
+            if (IS_LOCAL) {{
+                try {{
+                    await fetch(LOCAL_API + '/api/callsignal', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ cmdType: 'hangUp' }})
+                    }});
+                }} catch (_) {{}}
+            }}
         }}
 
         async function pollKdStatus() {{
+            if (!IS_LOCAL) return;
             try {{
                 const res = await fetch(LOCAL_API + '/api/status');
                 const data = await res.json();
@@ -2268,43 +2300,69 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             }} catch (_) {{}}
         }}
 
+        function attachSessionEvents(sess) {{
+            sess.on('peerconnection', (e) => {{
+                e.peerconnection.addEventListener('track', (ev) => {{
+                    const stream = ev.streams && ev.streams[0] ? ev.streams[0] : new MediaStream([ev.track]);
+                    if (ev.track.kind === 'video') {{
+                        const v = document.getElementById('remoteVideo');
+                        v.srcObject = stream;
+                        v.classList.remove('hidden');
+                        document.getElementById('cameraPlaceholder').classList.add('hidden');
+                        v.play().catch(() => {{}});
+                    }} else if (ev.track.kind === 'audio') {{
+                        const a = document.getElementById('remoteAudio');
+                        a.srcObject = stream;
+                        a.play().catch(() => {{}});
+                    }}
+                }});
+            }});
+            sess.on('ended', () => endCall());
+            sess.on('failed', () => endCall());
+        }}
+
         function initWebRTC() {{
-            if (typeof JsSIP === 'undefined' || !SIP_PASS) return;
+            const badge = document.getElementById('webrtcStatusBadge');
+            if (typeof JsSIP === 'undefined' || !SIP_PASS) {{
+                if (badge) badge.innerText = 'SIN CREDENCIAL';
+                return;
+            }}
             try {{
+                if (badge) badge.innerText = 'CONECTANDO...';
                 const socket = new JsSIP.WebSocketInterface('wss://vps-6615824-x.dattaweb.com/ws');
                 ua = new JsSIP.UA({{
                     sockets: [socket],
                     uri: 'sip:' + EXTEN + '-webrtc@138.219.41.163',
                     authorization_user: EXTEN,
                     password: SIP_PASS,
-                    register: true
+                    register: true,
+                    session_timers: false
                 }});
                 ua.on('registered', () => {{
-                    document.getElementById('webrtcStatusBadge').innerText = 'EN LÍNEA (WSS)';
+                    if (badge) badge.innerText = 'EN LÍNEA (WSS)';
+                }});
+                ua.on('registrationFailed', (e) => {{
+                    if (badge) badge.innerText = 'ERROR SIP: ' + (e.cause || 'AUTH');
+                }});
+                ua.on('disconnected', () => {{
+                    if (badge) badge.innerText = 'DESCONECTADO';
                 }});
                 ua.on('newRTCSession', (data) => {{
                     currentSession = data.session;
+                    attachSessionEvents(currentSession);
                     if (currentSession.direction === 'incoming') simulateRing();
-                    currentSession.on('peerconnection', (e) => {{
-                        e.peerconnection.addEventListener('track', (ev) => {{
-                            if (ev.track.kind === 'video') {{
-                                const v = document.getElementById('remoteVideo');
-                                v.srcObject = ev.streams[0];
-                                v.classList.remove('hidden');
-                                document.getElementById('cameraPlaceholder').classList.add('hidden');
-                            }} else if (ev.track.kind === 'audio') {{
-                                document.getElementById('remoteAudio').srcObject = ev.streams[0];
-                            }}
-                        }});
-                    }});
                 }});
                 ua.start();
-            }} catch (_) {{}}
+            }} catch (err) {{
+                if (badge) badge.innerText = 'ERROR JS';
+            }}
         }}
 
         initWebRTC();
-        setInterval(pollKdStatus, 700);
-        pollKdStatus();
+        if (IS_LOCAL) {{
+            setInterval(pollKdStatus, 700);
+            pollKdStatus();
+        }}
     </script>
 </body>
 </html>"""
