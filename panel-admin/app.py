@@ -239,6 +239,27 @@ def get_public_ip() -> str:
     return "127.0.0.1"
 
 
+def get_door_exten_for_unit(exten: str) -> str:
+    if re.match(r"^[1-9]0[5-8]$", exten):
+        return "8001"
+    return "8000"
+
+
+def format_unit_label(exten: str) -> str:
+    if exten == "8000":
+        return "Portero 1 (Torre A-D)"
+    if exten == "8001":
+        return "Portero 2 (Torre E-H)"
+    m = re.match(r"^([1-9])0([1-8])$", exten)
+    if m:
+        piso = m.group(1)
+        idx = int(m.group(2))
+        letras = {1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F", 7: "G", 8: "H"}
+        torre = "Portero 1 (A-D)" if idx <= 4 else "Portero 2 (E-H)"
+        return f"Piso {piso} · Depto {letras[idx]} ({torre})"
+    return f"Departamento {exten}"
+
+
 def parse_extensions() -> list[dict]:
     """Lee las extensiones y contraseñas desde pjsip.conf y pjsip_vecinos_extra.conf."""
     files = [f for f in (PJSIP_MAIN, PJSIP_EXTRA) if os.path.exists(f)]
@@ -268,7 +289,7 @@ def parse_extensions() -> list[dict]:
         extensions.append(
             {
                 "exten": exten,
-                "role": "Frente de Calle KD9203" if exten == "8000" else f"Departamento {exten}",
+                "role": format_unit_label(exten),
                 "password": password,
                 "token": token,
                 "prov_url": f"{base_url}/prov/{exten}_{token}.xml",
@@ -311,8 +332,8 @@ def get_asterisk_aor_status() -> dict[str, dict]:
 
 
 def add_neighbor_extension(exten: str, password: str) -> tuple[bool, str]:
-    if not re.match(r"^[1-7]\d{2}$", exten):
-        return False, "El número de departamento debe tener 3 dígitos (entre 100 y 799)."
+    if not re.match(r"^[1-9]\d{2}$", exten):
+        return False, "El número de departamento debe tener 3 dígitos (entre 100 y 999)."
 
     existing = {item["exten"] for item in parse_extensions()}
     if exten in existing:
@@ -346,8 +367,51 @@ def add_neighbor_extension(exten: str, password: str) -> tuple[bool, str]:
     return True, f"Departamento {exten} creado exitosamente."
 
 
+def provision_two_towers_9_floors() -> tuple[bool, str]:
+    """Genera Portero 2 (8001) y los 72 deptos (9 pisos x A-D y E-H) sin duplicar existentes."""
+    existing = {item["exten"] for item in parse_extensions()}
+    os.makedirs(os.path.dirname(PJSIP_EXTRA), exist_ok=True)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    blocks = []
+    created = 0
+
+    if "8001" not in existing:
+        p2_pass = secrets.token_urlsafe(9)[:12]
+        blocks.append(
+            f"\n; --- Portero 2 (8001 - Torre E-H) agregado {now_str} ---\n"
+            f"[8001](endpoint-base)\nauth=8001-auth\naors=8001\ncallerid=\"Portero 2 E-H\" <8001>\ndtmf_mode=auto\n\n"
+            f"[8001-auth](auth-base)\nusername=8001\npassword={p2_pass}\n\n"
+            f"[8001](aor-portero)\n"
+        )
+        created += 1
+
+    for piso in range(1, 10):
+        for unit in range(1, 9):
+            exten = f"{piso}0{unit}"
+            if exten in existing:
+                continue
+            pw = secrets.token_urlsafe(9)[:12]
+            blocks.append(
+                f"\n; --- Departamento {exten} (Lote 2 Edificios {now_str}) ---\n"
+                f"[{exten}](endpoint-base)\nauth={exten}-auth\naors={exten}\ncallerid=\"Depto {exten}\" <{exten}>\n\n"
+                f"[{exten}-webrtc](endpoint-webrtc)\nauth={exten}-auth\naors={exten}-webrtc\ncallerid=\"Depto {exten} App\" <{exten}>\n\n"
+                f"[{exten}-auth](auth-base)\nusername={exten}\npassword={pw}\n\n"
+                f"[{exten}](aor-vecino)\n[{exten}-webrtc](aor-vecino-webrtc)\n"
+            )
+            created += 1
+
+    if not blocks:
+        return True, "Los 2 edificios (9 pisos A-D y E-H + Portero 8001) ya estaban creados."
+
+    with open(PJSIP_EXTRA, "a", encoding="utf-8") as f:
+        f.write("".join(blocks))
+
+    subprocess.run(["asterisk", "-rx", "module reload res_pjsip.so"], check=False)
+    return True, f"Se crearon {created} extensiones (Portero 2: 8001 + 9 pisos A-D y E-H) en Asterisk."
+
+
 def delete_neighbor_extension(exten: str) -> tuple[bool, str]:
-    if exten == "8000" or not os.path.exists(PJSIP_EXTRA):
+    if exten in ("8000", "8001") or not os.path.exists(PJSIP_EXTRA):
         return False, "Solo se pueden eliminar departamentos adicionales creados en pjsip_vecinos_extra.conf."
 
     with open(PJSIP_EXTRA, "r", encoding="utf-8") as f:
@@ -635,7 +699,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                         "push_proxy_port": 5060,
                         "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
                         "wss_url": f"wss://{domain}/ws" if domain else f"wss://{pub_ip}:8089/ws",
-                        "door_exten": "8000",
+                        "door_exten": get_door_exten_for_unit(exten),
                         "dtmf_unlock": "#",
                         "push_register_url": f"{base_url}/api/register-push",
                     }
@@ -786,7 +850,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                                         "password": ext_row["password"],
                                         "sip_host": pub_ip,
                                         "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
-                                        "door_exten": "8000",
+                                        "door_exten": get_door_exten_for_unit(exten),
                                         "dtmf_unlock": "#",
                                         "push_register_url": f"{base_url}/api/register-push",
                                     }
@@ -915,6 +979,15 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 save_family_data(fam_db)
             log_audit(ident["username"], ident["role"], "RESET_TITULAR", f"Titular y familiares reiniciados en Depto {exten}", client_ip)
             self.redirect(f"{next_route}?msg={urllib.parse.quote(f'Titular del Depto {exten} reiniciado. El próximo QR será el nuevo Titular.')}")
+        elif self.path == "/superadmin/provision-2-edificios":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            ok, message = provision_two_towers_9_floors()
+            if ok:
+                log_audit(ident["username"], "superadmin", "PROVISION_2_EDIFICIOS", message, client_ip)
+            param = "msg" if ok else "err"
+            self.redirect(f"/superadmin?{param}={urllib.parse.quote(message)}")
         elif self.path == "/superadmin/admins/add":
             if ident["role"] != "superadmin":
                 self.send_error(403, "Solo Super Admin")
@@ -975,16 +1048,18 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         items = parse_extensions()
         fam_db = load_family_data()
 
-        total_units = sum(1 for i in items if i["exten"] != "8000")
-        online_units = sum(1 for i in items if i["exten"] != "8000" and i["status"] == "Online")
+        total_units = sum(1 for i in items if i["exten"] not in ("8000", "8001"))
+        online_units = sum(1 for i in items if i["exten"] not in ("8000", "8001") and i["status"] == "Online")
         total_contacts = sum(int(i.get("contacts", 0)) for i in items)
         total_push = sum(int(i.get("push_count", 0)) for i in items)
         door_item = next((i for i in items if i["exten"] == "8000"), None)
+        door2_item = next((i for i in items if i["exten"] == "8001"), None)
         door_online = door_item is not None and door_item.get("status") == "Online"
+        door2_online = door2_item is not None and door2_item.get("status") == "Online"
 
         rows_html = ""
         for item in items:
-            is_door = item["exten"] == "8000"
+            is_door = item["exten"] in ("8000", "8001")
             is_online = item["status"] == "Online"
             ext_esc = html.escape(item["exten"])
             role_esc = html.escape(item["role"])
@@ -1132,7 +1207,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             if door_online
             else "bg-amber-500/15 text-amber-300 border-amber-500/30"
         )
-        door_badge_txt = "Conectado (SIP 8000)" if door_online else "Sin registro SIP"
+        door_badge_txt = f"P1(8000): {'ON' if door_online else 'OFF'} · P2(8001): {'ON' if door2_online else 'OFF'}"
 
         template = """<!DOCTYPE html>
 <html lang="es" class="dark">
@@ -1469,8 +1544,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             <form method="POST" action="/admin/add" class="space-y-4">
                 <input type="hidden" name="next" value="__BASE_ROUTE__">
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Número de Departamento (100 - 799)</label>
-                    <input type="text" name="exten" placeholder="Ej: 304" required pattern="[1-7][0-9]{2}"
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Número de Departamento (100 - 999)</label>
+                    <input type="text" name="exten" placeholder="Ej: 101 (1°A) o 908 (9°H)" required pattern="[1-9][0-9]{2}"
                            class="w-full bg-[#070B14] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono">
                 </div>
                 <div>
@@ -1709,6 +1784,17 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             consorcio_url = f"{get_base_web_url()}/consorcio"
             superadmin_sections_html = f"""
             <section id="section-admins" class="hidden space-y-6">
+                <div class="glass-card rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-emerald-500/25">
+                    <div>
+                        <h3 class="text-base font-bold text-white">Provisionar 2 Edificios (9 Pisos: A-D y E-H)</h3>
+                        <p class="text-xs text-slate-400">Crea en 1 clic el Portero 2 (<code class="text-cyan-300">8001</code>) y los 72 deptos: <code class="text-indigo-300">101-904</code> (1°A-9°D) y <code class="text-emerald-300">105-908</code> (1°E-9°H).</p>
+                    </div>
+                    <form method="POST" action="/superadmin/provision-2-edificios" onsubmit="return confirm('¿Crear automáticamente Portero 8001 y los 72 departamentos de 9 pisos (A-D y E-H)?');">
+                        <button type="submit" class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg whitespace-nowrap">
+                            ⚡ Crear 2 Edificios (9 Pisos)
+                        </button>
+                    </form>
+                </div>
                 <div class="glass-card rounded-2xl p-6 space-y-4">
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div>
