@@ -104,6 +104,82 @@ def _valid_sip_creds(exten: str, password: str) -> bool:
         item["exten"] == exten and secrets.compare_digest(item["password"], password)
         for item in parse_extensions()
     )
+
+
+ADMINS_FILE = (
+    "/etc/asterisk/admins.json"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "admins.json")
+)
+AUDIT_LOG_FILE = (
+    "/etc/asterisk/audit_log.json"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "audit_log.json")
+)
+
+
+def _hash_admin_password(password: str, salt_hex: str = "") -> str:
+    salt = salt_hex or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100_000)
+    return f"pbkdf2${salt}${dk.hex()}"
+
+
+def _verify_admin_password(password: str, stored_hash: str) -> bool:
+    try:
+        parts = stored_hash.split("$", 2)
+        if len(parts) != 3 or parts[0] != "pbkdf2":
+            return False
+        expected = _hash_admin_password(password, parts[1])
+        return secrets.compare_digest(expected, stored_hash)
+    except Exception:
+        return False
+
+
+def load_admins() -> list:
+    if not os.path.exists(ADMINS_FILE):
+        return []
+    try:
+        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_admins(admins: list) -> None:
+    os.makedirs(os.path.dirname(ADMINS_FILE), exist_ok=True)
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(admins, f, indent=2, ensure_ascii=False)
+
+
+def load_audit_log() -> list:
+    if not os.path.exists(AUDIT_LOG_FILE):
+        return []
+    try:
+        with open(AUDIT_LOG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def log_audit(actor: str, role: str, action: str, detail: str, ip: str = "-") -> None:
+    try:
+        entries = load_audit_log()
+        entries.insert(0, {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "actor": actor[:50],
+            "role": role[:20],
+            "action": action[:40],
+            "detail": detail[:180],
+            "ip": ip[:45],
+        })
+        entries = entries[:300]
+        os.makedirs(os.path.dirname(AUDIT_LOG_FILE), exist_ok=True)
+        with open(AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 TEMPLATE_XML = os.path.join(
     BASE_DIR,
     "push",
@@ -307,20 +383,26 @@ def generate_provisioning_xml(exten: str, token: str) -> str | None:
 
 
 class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
-    def check_auth(self) -> bool:
-        if not ADMIN_PASS:
-            return False
+    def get_auth_identity(self):
         auth_header = self.headers.get("Authorization", "")
         if not auth_header.startswith("Basic "):
-            return False
+            return None
         try:
             decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
             user, passwd = decoded.split(":", 1)
-            return secrets.compare_digest(user, ADMIN_USER) and secrets.compare_digest(
-                passwd, ADMIN_PASS
-            )
+            if ADMIN_PASS and secrets.compare_digest(user, ADMIN_USER) and secrets.compare_digest(passwd, ADMIN_PASS):
+                return {"username": user, "role": "superadmin", "label": "Super Admin (valiente.tech)"}
+            for adm in load_admins():
+                if not adm.get("active", True):
+                    continue
+                if secrets.compare_digest(user, str(adm.get("username", ""))) and _verify_admin_password(passwd, str(adm.get("password_hash", ""))):
+                    return {"username": user, "role": "consorcio", "label": adm.get("label") or user}
+            return None
         except Exception:
-            return False
+            return None
+
+    def check_auth(self) -> bool:
+        return self.get_auth_identity() is not None
 
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -576,15 +658,26 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # El resto del panel requiere usuario y contraseña de administrador
-        if not self.check_auth():
+        ident = self.get_auth_identity()
+        if not ident:
             self.require_auth()
             return
 
-        if parsed.path in ("/", "/admin"):
+        if parsed.path in ("/superadmin", "/superadmin/"):
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Acceso exclusivo de Super Admin (valiente.tech)")
+                return
             qs = urllib.parse.parse_qs(parsed.query)
             msg = qs.get("msg", [""])[0]
             err = qs.get("err", [""])[0]
-            self.render_dashboard(msg=msg, err=err)
+            self.render_dashboard(msg=msg, err=err, is_superadmin=True, actor_label=ident["label"], base_route="/superadmin")
+        elif parsed.path in ("/", "/admin", "/consorcio"):
+            qs = urllib.parse.parse_qs(parsed.query)
+            msg = qs.get("msg", [""])[0]
+            err = qs.get("err", [""])[0]
+            is_sa = ident["role"] == "superadmin" and parsed.path != "/consorcio"
+            base_rt = "/consorcio" if parsed.path == "/consorcio" else "/admin"
+            self.render_dashboard(msg=msg, err=err, is_superadmin=is_sa, actor_label=ident["label"], base_route=base_rt)
         else:
             self.send_error(404, "Ruta no encontrada")
 
@@ -679,6 +772,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                                 if device_id:
                                     m["device_id"] = device_id
                                     save_family_data(fam_db)
+                                log_audit(m.get("name", "Familiar"), "familiar", "FAMILIAR_ACTIVADO", f"Depto {unit_exten} activado con código {invite_code}", self.headers.get("X-Real-IP") or self.client_address[0])
                                 pub_ip = get_public_ip()
                                 base_url = get_base_web_url()
                                 domain = os.environ.get("VPS_DOMAIN", "vps-6615824-x.dattaweb.com")
@@ -769,6 +863,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                     }
                     members.append(new_member)
                     save_family_data(fam_db)
+                    log_audit(f"Titular {exten}", "titular", "FAMILIAR_AGREGADO", f"Invitación {code} para {new_member['name']}", self.headers.get("X-Real-IP") or self.client_address[0])
                     send_json(200, {"ok": True, "member": new_member, "members": members, "max_members": MAX_FAMILY_MEMBERS})
                     return
 
@@ -776,6 +871,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                     member_id = str(data.get("member_id", "")).strip()
                     unit["members"] = [m for m in unit.get("members", []) if m.get("id") != member_id]
                     save_family_data(fam_db)
+                    log_audit(f"Titular {exten}", "titular", "FAMILIAR_REVOCADO", f"Miembro {member_id} revocado en Depto {exten}", self.headers.get("X-Real-IP") or self.client_address[0])
                     send_json(200, {"ok": True, "members": unit["members"], "max_members": MAX_FAMILY_MEMBERS})
                     return
 
@@ -784,23 +880,88 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 self.send_error(400, f"Solicitud invalida: {e}")
             return
 
-        if not self.check_auth():
+        ident = self.get_auth_identity()
+        if not ident:
             self.require_auth()
             return
 
         form = urllib.parse.parse_qs(post_data)
+        client_ip = self.headers.get("X-Real-IP") or self.client_address[0]
+        next_route = form.get("next", ["/admin"])[0].strip()
+        if next_route not in ("/admin", "/consorcio", "/superadmin"):
+            next_route = "/superadmin" if ident["role"] == "superadmin" else "/consorcio"
 
         if self.path == "/admin/add":
             exten = form.get("exten", [""])[0].strip()
             password = form.get("password", [""])[0].strip()
             ok, message = add_neighbor_extension(exten, password)
+            if ok:
+                log_audit(ident["username"], ident["role"], "CREAR_DEPTO", f"Depto {exten} creado", client_ip)
             param = "msg" if ok else "err"
-            self.redirect(f"/admin?{param}={urllib.parse.quote(message)}")
+            self.redirect(f"{next_route}?{param}={urllib.parse.quote(message)}")
         elif self.path == "/admin/delete":
             exten = form.get("exten", [""])[0].strip()
             ok, message = delete_neighbor_extension(exten)
+            if ok:
+                log_audit(ident["username"], ident["role"], "ELIMINAR_DEPTO", f"Depto {exten} eliminado", client_ip)
             param = "msg" if ok else "err"
-            self.redirect(f"/admin?{param}={urllib.parse.quote(message)}")
+            self.redirect(f"{next_route}?{param}={urllib.parse.quote(message)}")
+        elif self.path == "/admin/reset-owner":
+            exten = form.get("exten", [""])[0].strip()
+            fam_db = load_family_data()
+            if exten in fam_db:
+                fam_db[exten]["owner_id"] = ""
+                fam_db[exten]["members"] = []
+                save_family_data(fam_db)
+            log_audit(ident["username"], ident["role"], "RESET_TITULAR", f"Titular y familiares reiniciados en Depto {exten}", client_ip)
+            self.redirect(f"{next_route}?msg={urllib.parse.quote(f'Titular del Depto {exten} reiniciado. El próximo QR será el nuevo Titular.')}")
+        elif self.path == "/superadmin/admins/add":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            uname = form.get("username", [""])[0].strip()
+            upass = form.get("password", [""])[0].strip()
+            ulabel = form.get("label", [""])[0].strip() or uname
+            if not re.match(r"^[a-zA-Z0-9._-]{3,30}$", uname) or len(upass) < 6:
+                self.redirect(f"/superadmin?err={urllib.parse.quote('Usuario (3-30 alfanum.) y contraseña (mín. 6 caracteres) requeridos.')}")
+                return
+            admins = load_admins()
+            if any(a.get("username") == uname for a in admins) or uname == ADMIN_USER:
+                self.redirect(f"/superadmin?err={urllib.parse.quote('Ese usuario administrador ya existe.')}")
+                return
+            admins.append({
+                "username": uname,
+                "password_hash": _hash_admin_password(upass),
+                "label": ulabel[:60],
+                "active": True,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
+            save_admins(admins)
+            log_audit(ident["username"], "superadmin", "CREAR_ADMIN", f"Admin consorcio '{uname}' ({ulabel}) creado", client_ip)
+            self.redirect(f"/superadmin?msg={urllib.parse.quote(f'Administrador {uname} creado para /consorcio')}")
+        elif self.path == "/superadmin/admins/toggle":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            uname = form.get("username", [""])[0].strip()
+            admins = load_admins()
+            for a in admins:
+                if a.get("username") == uname:
+                    a["active"] = not a.get("active", True)
+                    estado = "activado" if a["active"] else "suspendido"
+                    log_audit(ident["username"], "superadmin", "ESTADO_ADMIN", f"Admin '{uname}' {estado}", client_ip)
+                    break
+            save_admins(admins)
+            self.redirect(f"/superadmin?msg={urllib.parse.quote(f'Estado de {uname} actualizado.')}")
+        elif self.path == "/superadmin/admins/delete":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            uname = form.get("username", [""])[0].strip()
+            admins = [a for a in load_admins() if a.get("username") != uname]
+            save_admins(admins)
+            log_audit(ident["username"], "superadmin", "ELIMINAR_ADMIN", f"Admin '{uname}' eliminado", client_ip)
+            self.redirect(f"/superadmin?msg={urllib.parse.quote(f'Administrador {uname} eliminado.')}")
         else:
             self.send_error(404)
 
@@ -809,9 +970,10 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def render_dashboard(self, msg: str = "", err: str = "") -> None:
+    def render_dashboard(self, msg: str = "", err: str = "", is_superadmin: bool = False, actor_label: str = "Admin", base_route: str = "/admin") -> None:
         pub_ip = get_public_ip()
         items = parse_extensions()
+        fam_db = load_family_data()
 
         total_units = sum(1 for i in items if i["exten"] != "8000")
         online_units = sum(1 for i in items if i["exten"] != "8000" and i["status"] == "Online")
@@ -851,12 +1013,38 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 else ext_esc
             )
 
+            fam_info = fam_db.get(item["exten"], {})
+            fam_count = len(fam_info.get("members", []))
+            has_owner = bool(fam_info.get("owner_id"))
+            owner_badge = (
+                ""
+                if is_door
+                else f'<span class="ml-2 text-[10px] font-mono px-2 py-0.5 rounded bg-white/[0.06] text-slate-300 border border-white/10">Titular: {"Asignado" if has_owner else "Libre"} · {fam_count}/5 fam.</span>'
+            )
+
+            reset_owner_btn = (
+                ""
+                if is_door
+                else f"""
+                <form method="POST" action="/admin/reset-owner" class="inline" onsubmit="return confirm('¿Reiniciar Titular y revocar sus familiares del Depto {ext_esc}?');">
+                    <input type="hidden" name="exten" value="{ext_esc}">
+                    <input type="hidden" name="next" value="{html.escape(base_route)}">
+                    <button type="submit" title="Reiniciar Titular"
+                            class="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/25 text-[11px] font-semibold transition">
+                        Reset Titular
+                    </button>
+                </form>
+                """
+            )
+
             delete_btn = (
                 ""
                 if is_door
                 else f"""
+                {reset_owner_btn}
                 <form method="POST" action="/admin/delete" class="inline" onsubmit="return confirm('¿Eliminar el departamento {ext_esc}?');">
                     <input type="hidden" name="exten" value="{ext_esc}">
+                    <input type="hidden" name="next" value="{html.escape(base_route)}">
                     <button type="submit" title="Eliminar unidad"
                             class="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/20 transition">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -896,7 +1084,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                             {avatar_label}
                         </div>
                         <div>
-                            <div class="text-sm font-semibold text-white">{role_esc}</div>
+                            <div class="text-sm font-semibold text-white">{role_esc}{owner_badge}</div>
                             <div class="text-xs text-slate-500 font-mono">SIP ID: {ext_esc}</div>
                         </div>
                     </div>
@@ -1029,6 +1217,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                         <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                         <span>App Android (APK v1.1)</span>
                     </button>
+                    __SUPERADMIN_NAV__
                 </nav>
             </div>
 
@@ -1064,14 +1253,14 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             <header class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
                 <div>
                     <div class="flex items-center gap-2 text-xs font-medium text-slate-400 mb-1">
-                        <span>Administración</span>
+                        <span>__ACTOR_BADGE__</span>
                         <span>/</span>
                         <span id="breadcrumbCurrent" class="text-indigo-400">Departamentos y Provisionamiento</span>
                     </div>
                     <h1 id="pageTitle" class="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">Panel del Edificio</h1>
                 </div>
                 <div class="flex items-center gap-2.5">
-                    <a href="/admin"
+                    <a href="__BASE_ROUTE__"
                        class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-semibold text-slate-200 transition">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                         Sincronizar
@@ -1263,6 +1452,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                     </div>
                 </div>
             </section>
+
+            __SUPERADMIN_SECTIONS__
         </main>
     </div>
 
@@ -1276,6 +1467,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 </button>
             </div>
             <form method="POST" action="/admin/add" class="space-y-4">
+                <input type="hidden" name="next" value="__BASE_ROUTE__">
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 mb-1.5">Número de Departamento (100 - 799)</label>
                     <input type="text" name="exten" placeholder="Ej: 304" required pattern="[1-7][0-9]{2}"
@@ -1371,9 +1563,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         }
 
         function switchSection(sec) {
-            ['units', 'hardware', 'mobile'].forEach(name => {
-                document.getElementById('section-' + name).classList.toggle('hidden', name !== sec);
+            ['units', 'hardware', 'mobile', 'admins', 'audit'].forEach(name => {
+                const secEl = document.getElementById('section-' + name);
                 const nav = document.getElementById('nav-' + name);
+                if (!secEl || !nav) return;
+                secEl.classList.toggle('hidden', name !== sec);
                 if (name === sec) {
                     nav.className = 'nav-active w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition';
                 } else {
@@ -1383,7 +1577,9 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             const titles = {
                 units: ['Panel del Edificio', 'Departamentos y Provisionamiento'],
                 hardware: ['Frente KD9203 y Biometría', 'Hardware Exterior & Reconocimiento Facial'],
-                mobile: ['App Móvil Oficial v1.1', 'Descarga e Instalación Android']
+                mobile: ['App Móvil Oficial v1.1', 'Descarga e Instalación Android'],
+                admins: ['Admins de Consorcio', 'Gestión de Administradores (/consorcio)'],
+                audit: ['Auditoría de Acciones', 'Registro en vivo de cambios y permisos']
             };
             document.getElementById('pageTitle').innerText = titles[sec][0];
             document.getElementById('breadcrumbCurrent').innerText = titles[sec][1];
@@ -1444,6 +1640,135 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 </body>
 </html>"""
 
+        superadmin_nav_html = ""
+        superadmin_sections_html = ""
+        if is_superadmin:
+            superadmin_nav_html = """
+                    <div class="pt-3 mt-3 border-t border-white/[0.07]">
+                        <div class="text-[10px] font-bold uppercase tracking-widest text-amber-400/90 px-3 mb-1.5">Super Admin</div>
+                        <button type="button" onclick="switchSection('admins')" id="nav-admins"
+                                class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-white/[0.04] border border-transparent transition">
+                            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            <span>Admins de Consorcio</span>
+                        </button>
+                        <button type="button" onclick="switchSection('audit')" id="nav-audit"
+                                class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-white/[0.04] border border-transparent transition">
+                            <svg class="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                            <span>Auditoría de Acciones</span>
+                        </button>
+                    </div>
+            """
+            admins_list = load_admins()
+            admins_rows = ""
+            for adm in admins_list:
+                u_esc = html.escape(str(adm.get("username", "")))
+                l_esc = html.escape(str(adm.get("label", "")))
+                c_esc = html.escape(str(adm.get("created_at", "")))
+                is_act = adm.get("active", True)
+                st_badge = '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold">Activo</span>' if is_act else '<span class="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[11px] font-semibold">Suspendido</span>'
+                admins_rows += f"""
+                <tr class="border-t border-white/[0.06]">
+                    <td class="py-3 px-4 font-mono text-sm text-white">{u_esc}</td>
+                    <td class="py-3 px-4 text-sm text-slate-300">{l_esc}</td>
+                    <td class="py-3 px-4">{st_badge}</td>
+                    <td class="py-3 px-4 text-xs text-slate-400 font-mono">{c_esc}</td>
+                    <td class="py-3 px-4 text-right space-x-2">
+                        <form method="POST" action="/superadmin/admins/toggle" class="inline">
+                            <input type="hidden" name="username" value="{u_esc}">
+                            <button type="submit" class="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-semibold text-slate-200 border border-white/10">
+                                {"Suspender" if is_act else "Activar"}
+                            </button>
+                        </form>
+                        <form method="POST" action="/superadmin/admins/delete" class="inline" onsubmit="return confirm('¿Eliminar admin {u_esc}?');">
+                            <input type="hidden" name="username" value="{u_esc}">
+                            <button type="submit" class="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-xs font-semibold text-rose-300 border border-rose-500/30">
+                                Eliminar
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                """
+            if not admins_rows:
+                admins_rows = '<tr><td colspan="5" class="py-6 text-center text-xs text-slate-500">Aún no creaste administradores de consorcio.</td></tr>'
+
+            audit_rows = ""
+            for ev in load_audit_log():
+                audit_rows += f"""
+                <tr class="border-t border-white/[0.05] text-xs">
+                    <td class="py-2.5 px-4 font-mono text-slate-400 whitespace-nowrap">{html.escape(str(ev.get("ts","")))}</td>
+                    <td class="py-2.5 px-4 font-semibold text-white">{html.escape(str(ev.get("actor","")))}</td>
+                    <td class="py-2.5 px-4 font-mono text-indigo-300">{html.escape(str(ev.get("role","")))}</td>
+                    <td class="py-2.5 px-4 font-mono text-emerald-300">{html.escape(str(ev.get("action","")))}</td>
+                    <td class="py-2.5 px-4 text-slate-300">{html.escape(str(ev.get("detail","")))}</td>
+                    <td class="py-2.5 px-4 font-mono text-slate-500">{html.escape(str(ev.get("ip","")))}</td>
+                </tr>
+                """
+            if not audit_rows:
+                audit_rows = '<tr><td colspan="6" class="py-6 text-center text-xs text-slate-500">Sin eventos registrados todavía.</td></tr>'
+
+            consorcio_url = f"{get_base_web_url()}/consorcio"
+            superadmin_sections_html = f"""
+            <section id="section-admins" class="hidden space-y-6">
+                <div class="glass-card rounded-2xl p-6 space-y-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                            <h3 class="text-lg font-bold text-white">Crear Administrador de Consorcio</h3>
+                            <p class="text-xs text-slate-400">Acceso para que el encargado/administrador asigne departamentos en <code class="text-indigo-300">{html.escape(consorcio_url)}</code></p>
+                        </div>
+                        <button type="button" onclick="copyText('{html.escape(consorcio_url)}', 'URL /consorcio copiada')"
+                                class="px-3.5 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/35 border border-indigo-500/30 text-xs font-semibold text-indigo-300">
+                            Copiar URL /consorcio
+                        </button>
+                    </div>
+                    <form method="POST" action="/superadmin/admins/add" class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                        <input type="text" name="username" placeholder="Usuario (ej: consorcio1)" required pattern="[a-zA-Z0-9._-]{{3,30}}"
+                               class="bg-[#070B14] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono">
+                        <input type="password" name="password" placeholder="Contraseña (mín. 6)" required minlength="6"
+                               class="bg-[#070B14] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono">
+                        <input type="text" name="label" placeholder="Edificio / Nombre (ej: Edificio Centro)" required
+                               class="bg-[#070B14] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm text-white">
+                        <button type="submit" class="rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 shadow-lg">
+                            + Crear Admin
+                        </button>
+                    </form>
+                </div>
+
+                <div class="glass-card rounded-2xl overflow-hidden">
+                    <div class="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
+                        <h3 class="text-sm font-bold text-white">Administradores Habilitados</h3>
+                        <span class="text-xs text-slate-400 font-mono">{len(admins_list)} cuenta(s)</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="bg-white/[0.02] text-[11px] uppercase tracking-wider text-slate-400">
+                                <tr><th class="py-3 px-4">Usuario</th><th class="py-3 px-4">Consorcio / Etiqueta</th><th class="py-3 px-4">Estado</th><th class="py-3 px-4">Creado</th><th class="py-3 px-4 text-right">Acciones</th></tr>
+                            </thead>
+                            <tbody>{admins_rows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="section-audit" class="hidden space-y-4">
+                <div class="glass-card rounded-2xl overflow-hidden">
+                    <div class="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-white">Auditoría de Acciones (Super Admin)</h3>
+                            <p class="text-xs text-slate-400">Todas las altas/bajas de deptos, titulares, familiares y administradores.</p>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="bg-white/[0.02] text-[11px] uppercase tracking-wider text-slate-400">
+                                <tr><th class="py-3 px-4">Fecha</th><th class="py-3 px-4">Actor</th><th class="py-3 px-4">Rol</th><th class="py-3 px-4">Acción</th><th class="py-3 px-4">Detalle</th><th class="py-3 px-4">IP</th></tr>
+                            </thead>
+                            <tbody>{audit_rows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+            """
+
         page = (
             template
             .replace("__PUB_IP__", html.escape(pub_ip))
@@ -1455,6 +1780,10 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             .replace("__DOOR_BADGE_CLS__", door_badge_cls)
             .replace("__DOOR_BADGE_TXT__", door_badge_txt)
             .replace("__ROWS_HTML__", rows_html)
+            .replace("__SUPERADMIN_NAV__", superadmin_nav_html)
+            .replace("__SUPERADMIN_SECTIONS__", superadmin_sections_html)
+            .replace("__ACTOR_BADGE__", html.escape(actor_label or "Administración"))
+            .replace("__BASE_ROUTE__", html.escape(base_route))
         )
         body = page.encode("utf-8")
         self.send_response(200)
