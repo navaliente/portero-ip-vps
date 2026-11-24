@@ -293,7 +293,7 @@ def parse_extensions() -> list[dict]:
                 "password": password,
                 "token": token,
                 "prov_url": f"{base_url}/prov/{exten}_{token}.xml",
-                "app_config_url": f"{base_url}/api/config/{exten}_{token}.json",
+                "app_config_url": f"{base_url}/d/{exten}_{token}",
                 "webapp_url": f"{base_url}/vecino?exten={exten}&token={token}",
                 "contacts": status_info["contacts"],
                 "push_count": push_count,
@@ -682,33 +682,105 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404, "Perfil de aprovisionamiento no encontrado")
             return
 
-        # Endpoint público (con token secreto) en JSON para la App Móvil propia del edificio
-        m_json = re.match(r"^/api/config/(\d+)_([a-f0-9]{24})\.json$", parsed.path)
+        # Endpoint universal del QR: devuelve JSON a la App Flutter y página interactiva (Android APK + iPhone Safari) al navegador/cámara
+        m_json = re.match(r"^/(?:api/config|d)/(\d+)_([a-f0-9]{24})(?:\.json)?$", parsed.path)
         if m_json:
             exten, token = m_json.group(1), m_json.group(2)
+            is_json_route = parsed.path.endswith(".json")
+            ua = self.headers.get("User-Agent", "")
+            accept = self.headers.get("Accept", "")
+            wants_json = is_json_route or ("Dart/" in ua) or ("application/json" in accept and "text/html" not in accept)
             for item in parse_extensions():
                 if item["exten"] == exten and item["token"] == token:
                     pub_ip = get_public_ip()
                     base_url = get_base_web_url()
                     domain = os.environ.get("VPS_DOMAIN", "vps-6615824-x.dattaweb.com")
-                    payload = {
-                        "exten": exten,
-                        "password": item["password"],
-                        "sip_host": pub_ip,
-                        "sip_port": 5060,
-                        "push_proxy_port": 5060,
-                        "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
-                        "wss_url": f"wss://{domain}/ws" if domain else f"wss://{pub_ip}:8089/ws",
-                        "door_exten": get_door_exten_for_unit(exten),
-                        "dtmf_unlock": "#",
-                        "push_register_url": f"{base_url}/api/register-push",
-                    }
-                    body = json.dumps(payload).encode("utf-8")
+                    if wants_json:
+                        payload = {
+                            "exten": exten,
+                            "password": item["password"],
+                            "sip_host": pub_ip,
+                            "sip_port": 5060,
+                            "push_proxy_port": 5060,
+                            "ws_url": f"wss://{domain}/ws" if domain else f"ws://{pub_ip}:8086/ws",
+                            "wss_url": f"wss://{domain}/ws" if domain else f"wss://{pub_ip}:8089/ws",
+                            "door_exten": get_door_exten_for_unit(exten),
+                            "dtmf_unlock": "#",
+                            "push_register_url": f"{base_url}/api/register-push",
+                        }
+                        body = json.dumps(payload).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    unit_label = html.escape(format_unit_label(exten))
+                    apk_url = f"{base_url}/porterocloud.apk"
+                    vecino_url = f"{base_url}/vecino?exten={exten}&token={token}"
+                    apk_info = get_apk_info()
+                    sha_txt = f'<div class="text-[10px] font-mono text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2 break-all">SHA-256: {apk_info["sha256"]}</div>' if apk_info else ""
+                    qr_page = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activar {unit_label} • PorteroCloud</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#060911] text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="max-w-lg w-full space-y-4">
+        <div class="text-center space-y-1.5">
+            <img src="/icon.svg" alt="PorteroCloud" class="w-14 h-14 mx-auto rounded-2xl shadow-lg">
+            <span class="inline-block text-[11px] font-bold px-3 py-0.5 rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-300">Depto {html.escape(exten)}</span>
+            <h1 class="text-xl font-extrabold text-white">{unit_label}</h1>
+            <p class="text-xs text-slate-400">Elegí tu teléfono para instalar y activar el portero</p>
+        </div>
+
+        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Android</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">App APK Directa</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                1. Descargá e instalá la app.<br>
+                2. Abrila, entrá a <strong>Ajustes → Vincular con QR</strong> y escaneá este mismo código QR.
+            </p>
+            <a href="{apk_url}" class="block w-full text-center py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-lg transition">
+                ⬇ Descargar App PorteroCloud (Android)
+            </a>
+            {sha_txt}
+        </div>
+
+        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold uppercase tracking-wider text-cyan-400">iPhone (iOS)</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold">Safari WebApp (PWA)</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                Tocá el botón de abajo para abrir tu portero en <strong>Safari</strong>, luego tocá <strong>Compartir</strong> → <strong>"Agregar a pantalla de inicio"</strong>.
+            </p>
+            <a href="{vecino_url}" class="block w-full text-center py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-bold shadow-lg transition">
+                📲 Abrir Portero en iPhone (Depto {html.escape(exten)})
+            </a>
+        </div>
+
+        <div class="text-center text-[11px] text-slate-500 pt-1">
+            © 2026 valiente.tech — Todos los derechos reservados
+        </div>
+    </div>
+</body>
+</html>""".encode("utf-8")
                     self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(qr_page)))
                     self.end_headers()
-                    self.wfile.write(body)
+                    self.wfile.write(qr_page)
                     return
             self.send_error(404, "Configuracion no encontrada")
             return
