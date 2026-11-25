@@ -2120,8 +2120,26 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         const IS_LOCAL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
         const LOCAL_API = IS_LOCAL ? "http://localhost:8090" : "";
 
+        function unlockMobileAudio() {{
+            try {{
+                if (!audioCtx) {{
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    audioCtx = new AC();
+                }}
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const buf = audioCtx.createBuffer(1, 1, 22050);
+                const src = audioCtx.createBufferSource();
+                src.buffer = buf;
+                src.connect(audioCtx.destination);
+                src.start(0);
+            }} catch (_) {{}}
+        }}
+        document.addEventListener('touchstart', unlockMobileAudio, {{ once: true }});
+        document.addEventListener('click', unlockMobileAudio, {{ once: true }});
+
         function playDingDongOnce() {{
             try {{
+                if (navigator.vibrate) navigator.vibrate([350, 150, 350]);
                 if (!audioCtx) {{
                     const AudioContext = window.AudioContext || window.webkitAudioContext;
                     audioCtx = new AudioContext();
