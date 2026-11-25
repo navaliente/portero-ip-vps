@@ -20,6 +20,7 @@ import re
 import secrets
 import subprocess
 import urllib.parse
+import urllib.request
 from datetime import datetime
 
 PORT = int(os.environ.get("PANEL_PORT", "8088"))
@@ -212,10 +213,79 @@ def is_fail2ban_active() -> bool:
         return False
 
 
+GEO_CACHE_FILE = (
+    "/etc/asterisk/ip_geo_cache.json"
+    if os.path.exists("/etc/asterisk")
+    else os.path.join(BASE_DIR, "asterisk", "ip_geo_cache.json")
+)
+
+
+def load_geo_cache() -> dict:
+    if not os.path.exists(GEO_CACHE_FILE):
+        return {}
+    try:
+        with open(GEO_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_geo_cache(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(GEO_CACHE_FILE), exist_ok=True)
+        with open(GEO_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def lookup_ip_geo(ip: str, cache: dict, allow_fetch: bool = True) -> dict:
+    if ip in cache:
+        return cache[ip]
+    info = {"country": "Desconocido", "countryCode": "--", "city": "-", "isp": "Red desconocida", "as": ""}
+    if not allow_fetch:
+        return info
+    try:
+        req = urllib.request.Request(
+            f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,city,isp,as",
+            headers={"User-Agent": "PorteroCloud-Radar/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=1.2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("status") == "success":
+                info = {
+                    "country": data.get("country") or "Desconocido",
+                    "countryCode": data.get("countryCode") or "--",
+                    "city": data.get("city") or "-",
+                    "isp": data.get("isp") or "ISP desconocido",
+                    "as": data.get("as") or "",
+                }
+                cache[ip] = info
+    except Exception:
+        pass
+    return info
+
+
+def infer_attacker_os_profile(methods: set, targets: set, isp: str) -> str:
+    isp_low = (isp or "").lower()
+    is_dc = any(k in isp_low for k in ("ovh", "hetzner", "digitalocean", "vultr", "linode", "amazon", "aws", "google", "microsoft", "azure", "choopa", "contabo", "leaseweb", "host", "cloud", "server", "vps"))
+    if "INVITE" in methods and any(len(t) >= 4 for t in targets):
+        base = "Botnet VoIP / Toll-Fraud (Linux)"
+    elif "REGISTER" in methods:
+        base = "Escáner SIPVicious / Python (Linux)"
+    else:
+        base = "Escáner SIP automatizado"
+    return f"{base} · Datacenter" if is_dc else base
+
+
 def scan_asterisk_threats() -> dict:
     counts: dict[str, int] = {}
     last_seen: dict[str, str] = {}
     reasons: dict[str, str] = {}
+    methods_map: dict[str, set] = {}
+    targets_map: dict[str, set] = {}
+    ports_map: dict[str, str] = {}
     log_path = "/var/log/asterisk/messages"
     pub_ip = get_public_ip()
     safe_ips = {"127.0.0.1", "0.0.0.0", pub_ip}
@@ -228,13 +298,21 @@ def scan_asterisk_threats() -> dict:
                 lines = f.read().decode("utf-8", errors="ignore").splitlines()
             for line in lines:
                 if "No matching endpoint found" in line or "Failed to authenticate" in line or "Wrong password" in line:
-                    m_ip = re.search(r"failed for '(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?'", line)
+                    m_ip = re.search(r"failed for '(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?'", line)
                     if not m_ip:
                         continue
                     ip = m_ip.group(1)
+                    port = m_ip.group(2) or "-"
                     if ip in safe_ips or ip.startswith("192.168.") or ip.startswith("10."):
                         continue
                     counts[ip] = counts.get(ip, 0) + 1
+                    ports_map[ip] = port
+                    m_meth = re.search(r"Request '([A-Z]+)'", line)
+                    if m_meth:
+                        methods_map.setdefault(ip, set()).add(m_meth.group(1))
+                    m_tgt = re.search(r"sip:([^@>]+)@", line)
+                    if m_tgt:
+                        targets_map.setdefault(ip, set()).add(m_tgt.group(1)[:16])
                     m_ts = re.match(r"^\[([^\]]+)\]", line)
                     if m_ts:
                         last_seen[ip] = m_ts.group(1)
@@ -242,15 +320,37 @@ def scan_asterisk_threats() -> dict:
         except Exception:
             pass
     banned = get_banned_ips()
+    geo_cache = load_geo_cache()
+    cache_dirty = False
     threats = []
-    for ip, cnt in sorted(counts.items(), key=lambda x: -x[1])[:40]:
+    top_items = sorted(counts.items(), key=lambda x: -x[1])[:40]
+    fetched = 0
+    for ip, cnt in top_items:
+        was_cached = ip in geo_cache
+        geo = lookup_ip_geo(ip, geo_cache, allow_fetch=(fetched < 12))
+        if not was_cached and ip in geo_cache:
+            fetched += 1
+            cache_dirty = True
+        meths = methods_map.get(ip, set())
+        tgts = targets_map.get(ip, set())
+        os_profile = infer_attacker_os_profile(meths, tgts, geo.get("isp", ""))
         threats.append({
             "ip": ip,
+            "port": ports_map.get(ip, "-"),
             "count": cnt,
             "last_seen": last_seen.get(ip, "-"),
             "reason": reasons.get(ip, "Escaneo SIP"),
+            "methods": ", ".join(sorted(meths)) or "SIP",
+            "targets": ", ".join(sorted(list(tgts))[:3]) or "-",
+            "country": geo.get("country", "Desconocido"),
+            "countryCode": geo.get("countryCode", "--"),
+            "city": geo.get("city", "-"),
+            "isp": geo.get("isp", "-"),
+            "os_profile": os_profile,
             "banned": ip in banned,
         })
+    if cache_dirty:
+        save_geo_cache(geo_cache)
     return {
         "threats": threats,
         "total_attacks": sum(counts.values()),
@@ -2120,16 +2220,29 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 )
                 threat_rows += f"""
                 <tr class="border-t border-white/[0.05] text-xs">
-                    <td class="py-2.5 px-4 font-mono font-bold text-white">{ip_esc}</td>
-                    <td class="py-2.5 px-4 font-mono text-amber-300">{t["count"]}</td>
-                    <td class="py-2.5 px-4 text-slate-300">{html.escape(t["reason"])}</td>
-                    <td class="py-2.5 px-4 font-mono text-slate-400">{html.escape(t["last_seen"])}</td>
+                    <td class="py-2.5 px-4">
+                        <div class="font-mono font-bold text-white">{ip_esc}</div>
+                        <div class="text-[10px] font-mono text-slate-500">Puerto :{html.escape(str(t.get("port","-")))}</div>
+                    </td>
+                    <td class="py-2.5 px-4">
+                        <div class="font-semibold text-cyan-300">{html.escape(t.get("countryCode","--"))} · {html.escape(t.get("country","-"))} ({html.escape(t.get("city","-"))})</div>
+                        <div class="text-[11px] text-slate-400 truncate max-w-[200px]" title="{html.escape(t.get("isp","-"))}">{html.escape(t.get("isp","-"))}</div>
+                    </td>
+                    <td class="py-2.5 px-4">
+                        <div class="font-mono font-bold text-amber-300">{t["count"]} ({html.escape(t.get("methods","SIP"))})</div>
+                        <div class="text-[10px] font-mono text-slate-400">Ext: {html.escape(t.get("targets","-"))}</div>
+                    </td>
+                    <td class="py-2.5 px-4">
+                        <div class="text-slate-200">{html.escape(t.get("os_profile","-"))}</div>
+                        <div class="text-[10px] text-slate-500">{html.escape(t["reason"])}</div>
+                    </td>
+                    <td class="py-2.5 px-4 font-mono text-slate-400 whitespace-nowrap">{html.escape(t["last_seen"])}</td>
                     <td class="py-2.5 px-4">{badge}</td>
                     <td class="py-2.5 px-4 text-right">{action_btn}</td>
                 </tr>
                 """
             if not threat_rows:
-                threat_rows = '<tr><td colspan="6" class="py-6 text-center text-xs text-slate-500">No se detectaron IPs atacantes recientes.</td></tr>'
+                threat_rows = '<tr><td colspan="7" class="py-6 text-center text-xs text-slate-500">No se detectaron IPs atacantes recientes.</td></tr>'
 
             f2b_badge = '<span class="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-xs font-semibold">Fail2ban Activo (Auto-ban 24h)</span>' if radar_data["fail2ban_active"] else '<span class="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-semibold">Fail2ban Inactivo</span>'
 
@@ -2180,7 +2293,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                     <div class="overflow-x-auto">
                         <table class="w-full text-left">
                             <thead class="bg-white/[0.02] text-[11px] uppercase tracking-wider text-slate-400">
-                                <tr><th class="py-3 px-4">IP Atacante</th><th class="py-3 px-4">Intentos</th><th class="py-3 px-4">Tipo</th><th class="py-3 px-4">Último intento</th><th class="py-3 px-4">Estado</th><th class="py-3 px-4 text-right">Acción</th></tr>
+                                <tr><th class="py-3 px-4">IP / Puerto</th><th class="py-3 px-4">País / Ciudad / ISP</th><th class="py-3 px-4">Intentos / Ext.</th><th class="py-3 px-4">Perfil / SO probable</th><th class="py-3 px-4">Último intento</th><th class="py-3 px-4">Estado</th><th class="py-3 px-4 text-right">Acción</th></tr>
                             </thead>
                             <tbody>{threat_rows}</tbody>
                         </table>
