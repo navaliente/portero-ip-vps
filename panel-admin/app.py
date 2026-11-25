@@ -180,6 +180,128 @@ def log_audit(actor: str, role: str, action: str, detail: str, ip: str = "-") ->
             json.dump(entries, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
+
+
+def get_banned_ips() -> set[str]:
+    banned: set[str] = set()
+    try:
+        out = subprocess.check_output(["iptables", "-L", "INPUT", "-n"], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if "DROP" in line or "REJECT" in line:
+                m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", line)
+                if m and m.group(1) != "0.0.0.0":
+                    banned.add(m.group(1))
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["fail2ban-client", "status", "asterisk"], text=True, stderr=subprocess.DEVNULL)
+        m = re.search(r"Banned IP list:\s*(.+)$", out, flags=re.MULTILINE)
+        if m:
+            for ip in m.group(1).strip().split():
+                banned.add(ip.strip())
+    except Exception:
+        pass
+    return banned
+
+
+def is_fail2ban_active() -> bool:
+    try:
+        out = subprocess.check_output(["fail2ban-client", "status", "asterisk"], text=True, stderr=subprocess.DEVNULL)
+        return "Status for the jail" in out
+    except Exception:
+        return False
+
+
+def scan_asterisk_threats() -> dict:
+    counts: dict[str, int] = {}
+    last_seen: dict[str, str] = {}
+    reasons: dict[str, str] = {}
+    log_path = "/var/log/asterisk/messages"
+    pub_ip = get_public_ip()
+    safe_ips = {"127.0.0.1", "0.0.0.0", pub_ip}
+    if os.path.isfile(log_path):
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 512000))
+                lines = f.read().decode("utf-8", errors="ignore").splitlines()
+            for line in lines:
+                if "No matching endpoint found" in line or "Failed to authenticate" in line or "Wrong password" in line:
+                    m_ip = re.search(r"failed for '(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?'", line)
+                    if not m_ip:
+                        continue
+                    ip = m_ip.group(1)
+                    if ip in safe_ips or ip.startswith("192.168.") or ip.startswith("10."):
+                        continue
+                    counts[ip] = counts.get(ip, 0) + 1
+                    m_ts = re.match(r"^\[([^\]]+)\]", line)
+                    if m_ts:
+                        last_seen[ip] = m_ts.group(1)
+                    reasons[ip] = "SIP Flood / Fuerza Bruta" if counts[ip] >= 10 else "Escaneo SIP 5060"
+        except Exception:
+            pass
+    banned = get_banned_ips()
+    threats = []
+    for ip, cnt in sorted(counts.items(), key=lambda x: -x[1])[:40]:
+        threats.append({
+            "ip": ip,
+            "count": cnt,
+            "last_seen": last_seen.get(ip, "-"),
+            "reason": reasons.get(ip, "Escaneo SIP"),
+            "banned": ip in banned,
+        })
+    return {
+        "threats": threats,
+        "total_attacks": sum(counts.values()),
+        "unique_ips": len(counts),
+        "banned_ips": sorted(banned),
+        "fail2ban_active": is_fail2ban_active(),
+    }
+
+
+def ban_ip_address(ip: str) -> tuple[bool, str]:
+    if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip):
+        return False, "IP inválida"
+    if ip in ("127.0.0.1", "0.0.0.0", get_public_ip()):
+        return False, "IP protegida"
+    banned = get_banned_ips()
+    if ip not in banned:
+        subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"], check=False)
+        subprocess.run(["fail2ban-client", "set", "asterisk", "banip", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return True, f"IP {ip} bloqueada en firewall."
+
+
+def unban_ip_address(ip: str) -> tuple[bool, str]:
+    if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip):
+        return False, "IP inválida"
+    subprocess.run(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    subprocess.run(["fail2ban-client", "set", "asterisk", "unbanip", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return True, f"IP {ip} desbloqueada."
+
+
+def setup_asterisk_fail2ban() -> tuple[bool, str]:
+    jail_cfg = (
+        "[asterisk]\n"
+        "enabled = true\n"
+        "filter = asterisk\n"
+        "port = 5060,5061\n"
+        "logpath = /var/log/asterisk/messages\n"
+        "maxretry = 5\n"
+        "findtime = 600\n"
+        "bantime = 86400\n"
+    )
+    try:
+        subprocess.run(["which", "fail2ban-client"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        subprocess.run(["apt-get", "update"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        subprocess.run(["apt-get", "install", "-y", "fail2ban"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    os.makedirs("/etc/fail2ban/jail.d", exist_ok=True)
+    with open("/etc/fail2ban/jail.d/asterisk-portero.conf", "w", encoding="utf-8") as f:
+        f.write(jail_cfg)
+    subprocess.run(["systemctl", "enable", "--now", "fail2ban"], check=False)
+    subprocess.run(["systemctl", "restart", "fail2ban"], check=False)
+    return True, "Fail2ban activado para Asterisk (bloqueo automático tras 5 intentos fallidos por 24h)."
 TEMPLATE_XML = os.path.join(
     BASE_DIR,
     "push",
@@ -718,6 +840,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
 
                     unit_label = html.escape(format_unit_label(exten))
                     apk_url = f"{base_url}/porterocloud.apk"
+                    prov_url = f"{base_url}/prov/{exten}_{token}.xml"
                     vecino_url = f"{base_url}/vecino?exten={exten}&token={token}"
                     apk_info = get_apk_info()
                     sha_txt = f'<div class="text-[10px] font-mono text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2 break-all">SHA-256: {apk_info["sha256"]}</div>' if apk_info else ""
@@ -739,35 +862,46 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             <img src="/icon.svg" alt="PorteroCloud" class="w-14 h-14 mx-auto rounded-2xl shadow-lg">
             <span class="inline-block text-[11px] font-bold px-3 py-0.5 rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-300">Depto {html.escape(exten)}</span>
             <h1 class="text-xl font-extrabold text-white">{unit_label}</h1>
-            <p class="text-xs text-slate-400">Elegí tu teléfono para instalar y activar el portero</p>
+            <p class="text-xs text-slate-400">Activación oficial estable para iPhone y Android</p>
         </div>
 
-        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
+        <div class="bg-[#0d1321] border border-emerald-500/30 rounded-2xl p-5 space-y-3">
             <div class="flex items-center justify-between">
-                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Android</span>
-                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">App APK Directa</span>
+                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Recomendado: Linphone (iPhone y Android)</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-semibold">100% Estable</span>
             </div>
             <p class="text-xs text-slate-300 leading-relaxed">
-                1. Descargá e instalá la app.<br>
-                2. Abrila, entrá a <strong>Ajustes → Vincular con QR</strong> y escaneá este mismo código QR.
+                1. Bajá <strong>Linphone</strong> oficial de tu tienda.<br>
+                2. Abrí Linphone → <strong>Asistente → Obtener configuración remota</strong>.<br>
+                3. Copiá este enlace de configuración o escaneá el QR de la pestaña <strong>Linphone (XML)</strong>:
             </p>
-            <a href="{apk_url}" class="block w-full text-center py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold shadow-lg transition">
-                ⬇ Descargar App PorteroCloud (Android)
-            </a>
+            <div class="grid grid-cols-2 gap-2">
+                <a href="https://apps.apple.com/app/linphone/id360065638" target="_blank" class="text-center py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shadow transition">
+                    🍎 Linphone iPhone
+                </a>
+                <a href="https://play.google.com/store/apps/details?id=org.linphone" target="_blank" class="text-center py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition">
+                    🤖 Linphone Android
+                </a>
+            </div>
+            <button type="button" onclick="navigator.clipboard && navigator.clipboard.writeText('{prov_url}'); this.innerText='✓ Enlace XML copiado';"
+                    class="block w-full text-center py-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] border border-white/15 text-indigo-300 text-xs font-mono font-bold transition">
+                📋 Copiar enlace XML para Linphone (Depto {html.escape(exten)})
+            </button>
+        </div>
+
+        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-4 space-y-2.5">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-slate-300">Alternativa: App PorteroCloud APK / Web</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <a href="{apk_url}" class="text-center py-2 rounded-xl bg-indigo-600/80 hover:bg-indigo-500 text-white text-xs font-bold transition">
+                    ⬇ APK Android
+                </a>
+                <a href="{vecino_url}" class="text-center py-2 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] text-slate-200 text-xs font-bold transition">
+                    🌐 WebApp Monitor
+                </a>
+            </div>
             {sha_txt}
-        </div>
-
-        <div class="bg-[#0d1321] border border-white/10 rounded-2xl p-5 space-y-3">
-            <div class="flex items-center justify-between">
-                <span class="text-xs font-bold uppercase tracking-wider text-cyan-400">iPhone (iOS)</span>
-                <span class="text-[11px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold">Safari WebApp (PWA)</span>
-            </div>
-            <p class="text-xs text-slate-300 leading-relaxed">
-                Tocá el botón de abajo para abrir tu portero en <strong>Safari</strong>, luego tocá <strong>Compartir</strong> → <strong>"Agregar a pantalla de inicio"</strong>.
-            </p>
-            <a href="{vecino_url}" class="block w-full text-center py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-bold shadow-lg transition">
-                📲 Abrir Portero en iPhone (Depto {html.escape(exten)})
-            </a>
         </div>
 
         <div class="text-center text-[11px] text-slate-500 pt-1">
@@ -1051,6 +1185,46 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 save_family_data(fam_db)
             log_audit(ident["username"], ident["role"], "RESET_TITULAR", f"Titular y familiares reiniciados en Depto {exten}", client_ip)
             self.redirect(f"{next_route}?msg={urllib.parse.quote(f'Titular del Depto {exten} reiniciado. El próximo QR será el nuevo Titular.')}")
+        elif self.path == "/superadmin/radar/ban":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            ip = form.get("ip", [""])[0].strip()
+            ok, message = ban_ip_address(ip)
+            if ok:
+                log_audit(ident["username"], "superadmin", "RADAR_BAN_IP", f"IP {ip} bloqueada en firewall", client_ip)
+            param = "msg" if ok else "err"
+            self.redirect(f"/superadmin?{param}={urllib.parse.quote(message)}")
+        elif self.path == "/superadmin/radar/unban":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            ip = form.get("ip", [""])[0].strip()
+            ok, message = unban_ip_address(ip)
+            if ok:
+                log_audit(ident["username"], "superadmin", "RADAR_UNBAN_IP", f"IP {ip} desbloqueada", client_ip)
+            param = "msg" if ok else "err"
+            self.redirect(f"/superadmin?{param}={urllib.parse.quote(message)}")
+        elif self.path == "/superadmin/radar/ban-all":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            radar = scan_asterisk_threats()
+            count = 0
+            for t in radar["threats"]:
+                if not t["banned"] and t["count"] >= 3:
+                    ok, _ = ban_ip_address(t["ip"])
+                    if ok:
+                        count += 1
+            log_audit(ident["username"], "superadmin", "RADAR_BAN_ALL", f"{count} IPs atacantes bloqueadas en lote", client_ip)
+            self.redirect(f"/superadmin?msg={urllib.parse.quote(f'Se bloquearon {count} IPs atacantes en el firewall.')}")
+        elif self.path == "/superadmin/radar/enable-fail2ban":
+            if ident["role"] != "superadmin":
+                self.send_error(403, "Solo Super Admin")
+                return
+            ok, message = setup_asterisk_fail2ban()
+            log_audit(ident["username"], "superadmin", "RADAR_FAIL2BAN", message, client_ip)
+            self.redirect(f"/superadmin?msg={urllib.parse.quote(message)}")
         elif self.path == "/superadmin/provision-2-edificios":
             if ident["role"] != "superadmin":
                 self.send_error(403, "Solo Super Admin")
@@ -1710,7 +1884,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
         }
 
         function switchSection(sec) {
-            ['units', 'hardware', 'mobile', 'admins', 'audit'].forEach(name => {
+            ['units', 'hardware', 'mobile', 'admins', 'audit', 'radar'].forEach(name => {
                 const secEl = document.getElementById('section-' + name);
                 const nav = document.getElementById('nav-' + name);
                 if (!secEl || !nav) return;
@@ -1726,7 +1900,8 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                 hardware: ['Frente KD9203 y Biometría', 'Hardware Exterior & Reconocimiento Facial'],
                 mobile: ['App Móvil Oficial v1.1', 'Descarga e Instalación Android'],
                 admins: ['Admins de Consorcio', 'Gestión de Administradores (/consorcio)'],
-                audit: ['Auditoría de Acciones', 'Registro en vivo de cambios y permisos']
+                audit: ['Auditoría de Acciones', 'Registro en vivo de cambios y permisos'],
+                radar: ['Radar de Bots & Amenazas', 'Detección SIP 5060, Firewall iptables y Fail2ban']
             };
             document.getElementById('pageTitle').innerText = titles[sec][0];
             document.getElementById('breadcrumbCurrent').innerText = titles[sec][1];
@@ -1755,7 +1930,7 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
             currentLinphoneUrl = linphoneUrl;
             currentAppUrl = appUrl;
             document.getElementById('qrTitle').innerText = 'Departamento ' + exten;
-            switchQRMode('app');
+            switchQRMode('linphone');
             const modal = document.getElementById('qrModal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
@@ -1802,6 +1977,11 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                                 class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-white/[0.04] border border-transparent transition">
                             <svg class="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                             <span>Auditoría de Acciones</span>
+                        </button>
+                        <button type="button" onclick="switchSection('radar')" id="nav-radar"
+                                class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-white/[0.04] border border-transparent transition">
+                            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                            <span>Radar de Bots (Seguridad)</span>
                         </button>
                     </div>
             """
@@ -1921,6 +2101,88 @@ class PorteroAdminHandler(http.server.BaseHTTPRequestHandler):
                                 <tr><th class="py-3 px-4">Fecha</th><th class="py-3 px-4">Actor</th><th class="py-3 px-4">Rol</th><th class="py-3 px-4">Acción</th><th class="py-3 px-4">Detalle</th><th class="py-3 px-4">IP</th></tr>
                             </thead>
                             <tbody>{audit_rows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+            """
+
+            radar_data = scan_asterisk_threats()
+            threat_rows = ""
+            for t in radar_data["threats"]:
+                ip_esc = html.escape(t["ip"])
+                is_ban = t["banned"]
+                badge = '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold">Bloqueada</span>' if is_ban else '<span class="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[11px] font-semibold">Activa</span>'
+                action_btn = (
+                    f'<form method="POST" action="/superadmin/radar/unban" class="inline"><input type="hidden" name="ip" value="{ip_esc}"><button type="submit" class="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-semibold text-slate-200 border border-white/10">Desbloquear</button></form>'
+                    if is_ban
+                    else f'<form method="POST" action="/superadmin/radar/ban" class="inline"><input type="hidden" name="ip" value="{ip_esc}"><button type="submit" class="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white shadow">Bloquear IP</button></form>'
+                )
+                threat_rows += f"""
+                <tr class="border-t border-white/[0.05] text-xs">
+                    <td class="py-2.5 px-4 font-mono font-bold text-white">{ip_esc}</td>
+                    <td class="py-2.5 px-4 font-mono text-amber-300">{t["count"]}</td>
+                    <td class="py-2.5 px-4 text-slate-300">{html.escape(t["reason"])}</td>
+                    <td class="py-2.5 px-4 font-mono text-slate-400">{html.escape(t["last_seen"])}</td>
+                    <td class="py-2.5 px-4">{badge}</td>
+                    <td class="py-2.5 px-4 text-right">{action_btn}</td>
+                </tr>
+                """
+            if not threat_rows:
+                threat_rows = '<tr><td colspan="6" class="py-6 text-center text-xs text-slate-500">No se detectaron IPs atacantes recientes.</td></tr>'
+
+            f2b_badge = '<span class="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-xs font-semibold">Fail2ban Activo (Auto-ban 24h)</span>' if radar_data["fail2ban_active"] else '<span class="px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-semibold">Fail2ban Inactivo</span>'
+
+            superadmin_sections_html += f"""
+            <section id="section-radar" class="hidden space-y-6">
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div class="glass-card rounded-2xl p-4">
+                        <div class="text-xs text-slate-400">Intentos SIP detectados</div>
+                        <div class="text-2xl font-extrabold text-rose-400 mt-1">{radar_data["total_attacks"]}</div>
+                    </div>
+                    <div class="glass-card rounded-2xl p-4">
+                        <div class="text-xs text-slate-400">IPs atacantes únicas</div>
+                        <div class="text-2xl font-extrabold text-amber-300 mt-1">{radar_data["unique_ips"]}</div>
+                    </div>
+                    <div class="glass-card rounded-2xl p-4">
+                        <div class="text-xs text-slate-400">IPs bloqueadas en Firewall</div>
+                        <div class="text-2xl font-extrabold text-emerald-400 mt-1">{len(radar_data["banned_ips"])}</div>
+                    </div>
+                    <div class="glass-card rounded-2xl p-4 flex flex-col justify-between">
+                        <div class="text-xs text-slate-400 mb-2">Protección Automática</div>
+                        <div>{f2b_badge}</div>
+                    </div>
+                </div>
+
+                <div class="glass-card rounded-2xl p-5 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-base font-bold text-white">Acciones Rápidas de Defensa</h3>
+                        <p class="text-xs text-slate-400">Bloquea en lote las IPs que escanean el puerto 5060 o activa Fail2ban automático.</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2.5">
+                        <form method="POST" action="/superadmin/radar/enable-fail2ban" class="inline">
+                            <button type="submit" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow">
+                                🛡 Activar Fail2ban Automático
+                            </button>
+                        </form>
+                        <form method="POST" action="/superadmin/radar/ban-all" class="inline" onsubmit="return confirm('¿Bloquear en iptables todas las IPs atacantes detectadas (>=3 intentos)?');">
+                            <button type="submit" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow">
+                                ⚡ Bloquear Todas las Amenazas
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="glass-card rounded-2xl overflow-hidden">
+                    <div class="px-5 py-4 border-b border-white/[0.07]">
+                        <h3 class="text-sm font-bold text-white">Top IPs Atacantes (Puerto SIP 5060)</h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="bg-white/[0.02] text-[11px] uppercase tracking-wider text-slate-400">
+                                <tr><th class="py-3 px-4">IP Atacante</th><th class="py-3 px-4">Intentos</th><th class="py-3 px-4">Tipo</th><th class="py-3 px-4">Último intento</th><th class="py-3 px-4">Estado</th><th class="py-3 px-4 text-right">Acción</th></tr>
+                            </thead>
+                            <tbody>{threat_rows}</tbody>
                         </table>
                     </div>
                 </div>
